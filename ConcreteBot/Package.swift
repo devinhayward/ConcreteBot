@@ -6,8 +6,8 @@ import PackageDescription
 let package = Package(
     name: "ConcreteBot",
     products: [
-        // Products define the executables and libraries a package produces, making them visible to other packages.
-        .library(
+        // Products define the executables and libraries a package produces.
+        .executable(
             name: "ConcreteBot",
             targets: ["ConcreteBot"]
         ),
@@ -15,8 +15,11 @@ let package = Package(
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
         // Targets can depend on other targets in this package and products from dependencies.
-        .target(
-            name: "ConcreteBot"
+        .executableTarget(
+            name: "ConcreteBot",
+            resources: [
+                .process("Resources")
+            ]
         ),
         .testTarget(
             name: "ConcreteBotTests",

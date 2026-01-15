@@ -1,21 +1,34 @@
 import Foundation
+import PDFKit
 
 enum ExtractError: Error, CustomStringConvertible {
     case missingPromptTemplate
     case noJSONFound
     case invalidResponse(String)
     case missingResponseInput
+    case invalidPageRange(String)
+    case pdfLoadFailed(String)
+    case pageOutOfRange(Int, Int)
+    case emptyPageText(Int)
 
     var description: String {
         switch self {
         case .missingPromptTemplate:
             return "Missing prompt template in resources."
         case .noJSONFound:
-            return "No JSON objects found in ChatGPT response."
+            return "No JSON objects found in model response."
         case .invalidResponse(let detail):
             return "Invalid response: \(detail)"
         case .missingResponseInput:
             return "No response input provided. Use --response-file or --response-stdin."
+        case .invalidPageRange(let detail):
+            return "Invalid page range: \(detail)"
+        case .pdfLoadFailed(let detail):
+            return "Failed to load PDF: \(detail)"
+        case .pageOutOfRange(let page, let total):
+            return "Page \(page) is out of range (1-\(total))."
+        case .emptyPageText(let page):
+            return "No text extracted from page \(page)."
         }
     }
 }
@@ -23,18 +36,6 @@ enum ExtractError: Error, CustomStringConvertible {
 enum Extract {
     static func run(options: CLIOptions) throws {
         let promptTemplate = try loadPromptTemplate()
-        let prompt = renderPrompt(
-            template: promptTemplate,
-            pdfPath: options.pdfPath,
-            pages: options.pages
-        )
-
-        if options.printPrompt {
-            print(prompt)
-            if options.responseFile == nil && !options.responseStdin {
-                return
-            }
-        }
 
         let response: String
         if let responseFile = options.responseFile {
@@ -43,30 +44,75 @@ enum Extract {
             let data = FileHandle.standardInput.readDataToEndOfFile()
             response = String(data: data, encoding: .utf8) ?? ""
         } else {
-            response = try PlaywrightClient.run(
-                prompt: prompt,
-                pdfPath: options.pdfPath,
-                profileDir: options.profileDir,
-                headless: options.headless,
-                browserChannel: options.browserChannel,
-                manualLogin: options.manualLogin
-            )
+            response = ""
         }
 
-        if response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            throw ExtractError.missingResponseInput
+        if !response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let jsonObjects = splitJSONObjects(from: response)
+            guard !jsonObjects.isEmpty else {
+                throw ExtractError.noJSONFound
+            }
+
+            var tickets: [Ticket] = []
+            for json in jsonObjects {
+                let ticket = try TicketValidator.decode(json: json)
+                let normalizedTicket = TicketNormalizer.normalize(ticket: ticket)
+                try TicketValidator.validate(ticket: normalizedTicket)
+                tickets.append(normalizedTicket)
+            }
+
+            let outputDir = expandingTilde(in: options.outputDir)
+            try FileWriter.write(tickets: tickets, outputDir: outputDir)
+            return
         }
 
-        let jsonObjects = splitJSONObjects(from: response)
-        guard !jsonObjects.isEmpty else {
-            throw ExtractError.noJSONFound
+        let pageNumbers: [Int]
+        do {
+            pageNumbers = try PageRange.parse(options.pages)
+        } catch let error as PageRangeError {
+            throw ExtractError.invalidPageRange(error.description)
+        }
+        guard let document = PDFDocument(url: URL(fileURLWithPath: options.pdfPath)) else {
+            throw ExtractError.pdfLoadFailed(options.pdfPath)
+        }
+
+        if options.printPrompt {
+            for pageNumber in pageNumbers {
+                let pageText = try extractPageText(document: document, pageNumber: pageNumber)
+                let prompt = renderPrompt(
+                    template: promptTemplate,
+                    pdfPath: options.pdfPath,
+                    page: pageNumber,
+                    pageText: pageText
+                )
+                print(prompt)
+                print("")
+            }
+            return
         }
 
         var tickets: [Ticket] = []
-        for json in jsonObjects {
-            let ticket = try TicketValidator.decode(json: json)
-            try TicketValidator.validate(ticket: ticket)
-            tickets.append(ticket)
+        for pageNumber in pageNumbers {
+            let pageText = try extractPageText(document: document, pageNumber: pageNumber)
+            let prompt = renderPrompt(
+                template: promptTemplate,
+                pdfPath: options.pdfPath,
+                page: pageNumber,
+                pageText: pageText
+            )
+
+            let modelResponse = try FoundationalModelsClient.run(prompt: prompt)
+            let jsonObjects = splitJSONObjects(from: modelResponse)
+            guard !jsonObjects.isEmpty else {
+                throw ExtractError.noJSONFound
+            }
+
+            for json in jsonObjects {
+                let ticket = try TicketValidator.decode(json: json)
+                let normalizedTicket = TicketNormalizer.normalize(ticket: ticket)
+                try TicketValidator.validate(ticket: normalizedTicket)
+                tickets.append(normalizedTicket)
+            }
         }
 
         let outputDir = expandingTilde(in: options.outputDir)
@@ -83,19 +129,18 @@ enum Extract {
         return try String(contentsOf: url, encoding: .utf8)
     }
 
-    private static func renderPrompt(template: String, pdfPath: String, pages: String) -> String {
+    private static func renderPrompt(
+        template: String,
+        pdfPath: String,
+        page: Int,
+        pageText: String
+    ) -> String {
         let fileName = URL(fileURLWithPath: pdfPath).lastPathComponent
-        var lines = template.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-
-        for index in lines.indices {
-            if lines[index].hasPrefix("File name:") {
-                lines[index] = "File name: <<\(fileName)>>"
-            } else if lines[index].hasPrefix("Page(s):") {
-                lines[index] = "Page(s): <<\(pages)>>"
-            }
-        }
-
-        return lines.joined(separator: "\n")
+        var rendered = template
+        rendered = rendered.replacingOccurrences(of: "<<FILE_NAME>>", with: fileName)
+        rendered = rendered.replacingOccurrences(of: "<<PAGE_NUMBER>>", with: String(page))
+        rendered = rendered.replacingOccurrences(of: "<<PDF_TEXT>>", with: pageText)
+        return rendered
     }
 
     private static func splitJSONObjects(from text: String) -> [String] {
@@ -140,6 +185,21 @@ enum Extract {
         }
 
         return results
+    }
+
+    private static func extractPageText(document: PDFDocument, pageNumber: Int) throws -> String {
+        let pageCount = document.pageCount
+        guard pageNumber >= 1 && pageNumber <= pageCount else {
+            throw ExtractError.pageOutOfRange(pageNumber, pageCount)
+        }
+        guard let page = document.page(at: pageNumber - 1) else {
+            throw ExtractError.pageOutOfRange(pageNumber, pageCount)
+        }
+        let text = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if text.isEmpty {
+            throw ExtractError.emptyPageText(pageNumber)
+        }
+        return text
     }
 
     private static func expandingTilde(in path: String) -> String {

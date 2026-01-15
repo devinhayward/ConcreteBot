@@ -52,3 +52,54 @@ import Testing
         try TicketValidator.validate(ticket: ticket)
     }
 }
+
+@Test func normalizesSlumpFromCodeAndRemovesExtraChargeNoise() {
+    let ticket = Ticket(
+        ticketNumber: "81521701",
+        deliveryDate: "Wed, Dec 11 2024",
+        deliveryTime: "09:20",
+        deliveryAddress: "330 Mill Road, Etobicoke, ON M9C 1Y8",
+        mixCustomer: MixRow(
+            qty: "9.00 m³",
+            customerDescription: "CHRONOLIA 45MPA 75%72HR N 20MM",
+            description: "CHRONOLIA 45MPA 75%72HR N 20MM",
+            code: "RMXD445N51N 150+-30",
+            slump: "9.00 SEASONAL/MANUTE (PER M3)"
+        ),
+        mixVendor: nil,
+        extraCharges: [
+            ExtraCharge(description: "SEASONAL/MANUTE (PER M3)", qty: "9.00"),
+            ExtraCharge(description: "FLEX FUEL FEE 1-INN", qty: "9.00")
+        ]
+    )
+
+    let normalized = TicketNormalizer.normalize(ticket: ticket)
+
+    #expect(normalized.mixCustomer.code == "RMXD445N51N")
+    #expect(normalized.mixCustomer.slump == "150+-30")
+}
+
+@Test func normalizesSlumpWhenItMatchesExtraChargeQty() {
+    let ticket = Ticket(
+        ticketNumber: "12345",
+        deliveryDate: "2024-12-11",
+        deliveryTime: "08:15",
+        deliveryAddress: "123 Example St",
+        mixCustomer: MixRow(
+            qty: "9.00 m³",
+            customerDescription: "Sample Mix",
+            description: "Test Mix",
+            code: "MX-1",
+            slump: "9.00"
+        ),
+        mixVendor: nil,
+        extraCharges: [
+            ExtraCharge(description: "ENVIRONNEMENT", qty: "9.00")
+        ]
+    )
+
+    let normalized = TicketNormalizer.normalize(ticket: ticket)
+
+    #expect(normalized.mixCustomer.code == "MX-1")
+    #expect(normalized.mixCustomer.slump == nil)
+}

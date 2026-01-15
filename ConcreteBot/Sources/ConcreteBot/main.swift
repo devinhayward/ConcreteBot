@@ -27,10 +27,6 @@ struct CLIOptions {
     let pdfPath: String
     let pages: String
     let outputDir: String
-    let profileDir: String
-    let headless: Bool
-    let browserChannel: String?
-    let manualLogin: Bool
     let printPrompt: Bool
     let responseFile: String?
     let responseStdin: Bool
@@ -41,19 +37,15 @@ func printUsage() {
     ConcreteBot
 
     Usage:
-      concretebot extract --pdf <path> --pages <range> [--out <dir>] [--profile <dir>] [--headless] [--channel <name>] [--manual-login] [--print-prompt] [--response-file <path>] [--response-stdin]
+      concretebot extract --pdf <path> --pages <range> [--out <dir>] [--print-prompt] [--response-file <path>] [--response-stdin]
 
     Options:
       --pdf       Path to the PDF file.
       --pages     Page range to extract (e.g., 2-23).
       --out       Output directory (default: current directory).
-      --profile   Playwright user data dir (default: ~/.concretebot/playwright).
-      --headless  Run browser in headless mode.
-      --channel   Playwright browser channel (e.g., chrome).
-      --manual-login  Wait for you to finish login/challenges, then press Enter.
       --print-prompt   Print the rendered prompt and exit.
-      --response-file  Path to a file containing ChatGPT JSON response.
-      --response-stdin Read ChatGPT JSON response from stdin.
+      --response-file  Path to a file containing model JSON response.
+      --response-stdin Read model JSON response from stdin.
     """
     print(usage)
 }
@@ -77,10 +69,6 @@ func parseCLI() throws -> (command: String, options: CLIOptions) {
     var pdfPath: String?
     var pages: String?
     var outputDir = FileManager.default.currentDirectoryPath
-    var profileDir = "~/.concretebot/playwright"
-    var headless = false
-    var browserChannel: String?
-    var manualLogin = false
     var printPrompt = false
     var responseFile: String?
     var responseStdin = false
@@ -101,20 +89,6 @@ func parseCLI() throws -> (command: String, options: CLIOptions) {
             guard index + 1 < args.count else { throw CLIError.missingArgument("--out") }
             outputDir = args[index + 1]
             index += 2
-        case "--profile":
-            guard index + 1 < args.count else { throw CLIError.missingArgument("--profile") }
-            profileDir = args[index + 1]
-            index += 2
-        case "--headless":
-            headless = true
-            index += 1
-        case "--channel":
-            guard index + 1 < args.count else { throw CLIError.missingArgument("--channel") }
-            browserChannel = args[index + 1]
-            index += 2
-        case "--manual-login":
-            manualLogin = true
-            index += 1
         case "--print-prompt":
             printPrompt = true
             index += 1
@@ -142,10 +116,6 @@ func parseCLI() throws -> (command: String, options: CLIOptions) {
             pdfPath: pdfPathValue,
             pages: pagesValue,
             outputDir: outputDir,
-            profileDir: profileDir,
-            headless: headless,
-            browserChannel: browserChannel,
-            manualLogin: manualLogin,
             printPrompt: printPrompt,
             responseFile: responseFile,
             responseStdin: responseStdin

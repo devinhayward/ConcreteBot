@@ -19,6 +19,10 @@ let package = Package(
             name: "ConcreteBot",
             resources: [
                 .process("Resources")
+            ],
+            linkerSettings: [
+                .linkedFramework("FoundationModels"),
+                .linkedFramework("PDFKit")
             ]
         ),
         .testTarget(

@@ -1,24 +1,25 @@
-MASTER PROMPT — CONCRETE TICKET DATA EXTRACTION (ESTIMATING / COST AUDIT)
+NCONCRETE TICKET DATA EXTRACTION (ESTIMATING / COST AUDIT)
 You are a Construction Estimator performing forensic concrete cost analysis.
 Your task is to extract commercially accurate, audit-ready data from concrete delivery tickets for budget reconciliation and variance analysis.
 This data will be used to explain why and how actual concrete dollars differ from the construction budget.
-STEP 1 — SOURCE OF TRUTH (MANDATORY)
+STEP 1 - SOURCE OF TRUTH (MANDATORY)
 IMPORTANT:
-First, use the browse_pdf_attachment tool to retrieve the exact text content from the attached PDF:
-File name: <<CD Order #7880550 Dec 11, 2024.pdf>>
-Page(s): <<2-23>>
+Use the PDF text below as the only source of truth:
+File name: <<FILE_NAME>>
+Page(s): <<PAGE_NUMBER>>
 Rules:
-Use the tool output as the only source of truth
+Use the text provided below as the only source of truth
 Do not rely on memory, assumptions, or prior responses
 Do not infer missing data
-Wait for the tool result before proceeding
-STEP 2 — SCOPE CONTROL
+PDF TEXT:
+<<PDF_TEXT>>
+STEP 2 - SCOPE CONTROL
 Extract data ONLY from the specified page(s) and ONLY for the specific ticket(s) shown on those page(s).
 Do not combine tickets
 Do not merge data across pages
 Do not infer totals from other tickets
 Each response must correspond to one concrete delivery ticket only, unless explicitly instructed otherwise.
-STEP 3 — OUTPUT FORMAT (STRICT)
+STEP 3 - OUTPUT FORMAT (STRICT)
 Return ONLY a valid JSON document (single object, not an array), per concrete ticket.
 Output a JSON file in the format "ticket-<<ticketNo.>>.json for each concrete ticket.
 
@@ -29,7 +30,8 @@ No explanations
 No markdown outside the JSON
 No trailing commas
 All values must be strings unless otherwise specified
-STEP 4 — REQUIRED JSON STRUCTURE
+Maintain the exact field order shown in STEP 4 (Ticket No. must be the first key).
+STEP 4 - REQUIRED JSON STRUCTURE
 Use exactly the following field names and hierarchy:
 {
   "Ticket No.": "",
@@ -58,7 +60,7 @@ Use exactly the following field names and hierarchy:
 If and only if a Mix Vendor row exists per STEP 5, set "Mix Vendor" to an object with keys exactly: "Qty", "Cust. Descr.", "Description", "Code", "Slump"; otherwise leave "Mix Vendor" as null.
 
 If a field does not exist on the page, return null for that value.
-STEP 5 — MIX TABLE RULES
+STEP 5 - MIX TABLE RULES
 Mix Vendor row must physically exist on the ticket.
 If the Mix table contains only one visible mix row, that row is the Customer Mix only.
 If no second mix row is present beneath it in the table, then:
@@ -72,6 +74,8 @@ Wrapped text does not constitute a second row
 If a mix row wraps onto additional lines within the same columns, concatenate those wrapped lines into the same field (preserve order and single spaces)
 If the Cust. Descr. column spans multiple lines, concatenate every line in that column into "Cust. Descr." (do not drop or move text)
 If the Description column spans multiple lines, concatenate every line in that column into "Description"
+The "Slump" field must only contain the value shown in the Slump column for that mix row; if the column is blank or missing, return null.
+Do not pull Slump from Extra Charges, notes, or any non-mix-table text (e.g., seasonal or fuel charges).
 Preserve units exactly as shown (e.g., m3)
 Preserve case, spacing, and wording after OCR normalization (see below)
 Vendor Mix Column Mapping Rule (MANDATORY)
@@ -80,10 +84,11 @@ If the Cust. Descr. column is visually blank on the ticket, return "Cust. Descr.
 Do not infer or backfill Vendor Cust. Descr. from adjacent text
 Any text appearing inline that combines a vendor identifier and temperature (e.g. 35NWIN1 WEATHERMIX 8 TO 10 DEGREES) must be placed entirely in the "Description" field
 The "Code" field must only contain the discrete numeric or alphanumeric code shown in the Code column (e.g. 909124)
+For the Customer Mix row, do not append Slump text to the "Code" value; Slump must only appear in the "Slump" field.
 Under no circumstances may Mix Vendor values be copied from Mix Customer.
 If a Mix Vendor row does not exist, returning a populated Mix Vendor object is considered an error.
-STEP 6 — EXTRA CHARGES RULES (CRITICAL)
-Extract charges ONLY from the “EXTRA-CHARGES” section.
+STEP 6 - EXTRA CHARGES RULES (CRITICAL)
+Extract charges ONLY from the "EXTRA-CHARGES" section.
 Do NOT:
 Add charges
 Remove charges
@@ -92,30 +97,30 @@ Combine charges
 Invent quantities
 Infer pricing
 Each charge must be its own object with:
-"Description" — the charge name
-"Qty" — the load quantity (e.g., 9.00)
-STEP 7 — OCR NORMALIZATION RULES (MANDATORY)
+"Description" - the charge name
+"Qty" - the load quantity (e.g., 9.00)
+STEP 7 - OCR NORMALIZATION RULES (MANDATORY)
 The PDF text layer may contain OCR or font artifacts.
 Apply only the following corrections, and nothing else:
 Allowed Normalization
 Collapse duplicated letters
-SSIITTEEWWAASSHHWWAATTEERR → SITE WASH WATER
+SSIITTEEWWAASSHHWWAATTEERR -> SITE WASH WATER
 Normalize malformed numbers
-9..00 → 9.00
+9..00 -> 9.00
 Restore proper spacing between words
 Explicitly Allowed Examples
-ENVIRONNEMENT (double-N French spelling) → keep as-is
-(PER M3) → keep as-is
-(M3) → keep as-is
+ENVIRONNEMENT (double-N French spelling) -> keep as-is
+(PER M3) -> keep as-is
+(M3) -> keep as-is
 Do NOT:
 Rename charges
 Improve wording
 Change capitalization intent
 Expand abbreviations
 Correct spelling beyond duplicated OCR artifacts
-The output must represent the commercially correct, human-readable invoice intent—not raw OCR noise.
+The output must represent the commercially correct, human-readable invoice intent - not raw OCR noise.
 Column boundaries must be respected even when OCR collapses rows; blank columns must remain null.
-STEP 8 — ACCURACY STANDARD
+STEP 8 - ACCURACY STANDARD
 This output must be accurate enough to:
 Support concrete cost audits
 Explain budget overruns

@@ -103,3 +103,44 @@ import Testing
     #expect(normalized.mixCustomer.code == "MX-1")
     #expect(normalized.mixCustomer.slump == nil)
 }
+
+@Test func normalizesTicketWithMixVendorRow() throws {
+    let json = """
+    {
+      "Ticket No.": "95820135",
+      "Delivery Date": "Wed, Jan 29 2025",
+      "Delivery Time": "11:31",
+      "Delivery Address": "330 Mill Road Toronto, ON M9C 1Y8",
+      "Mix Customer": {
+        "Qty": "7.00 m³",
+        "Cust. Descr.": "WEATHERMIX 45MPA C1 20MM HR",
+        "Description": "WEATHERMIX 45MPA C1 20MM HR",
+        "Code": "RMXW45151NX",
+        "Slump": "150+-30"
+      },
+      "Mix Vendor": {
+        "Qty": "7.00 m³",
+        "Cust. Descr.": null,
+        "Description": "45AWIN2 WEATHERMIX 5 TO 7 DEGREES",
+        "Code": "907489",
+        "Slump": null
+      },
+      "Extra Charges": [
+        { "Description": "SEASONAL/MANUTE (PER M3)", "Qty": "7.00" },
+        { "Description": "SITE WASH WATER MANAGEMENT FEE", "Qty": "7.00" },
+        { "Description": "TOARC FEE (M3)", "Qty": "7.00" },
+        { "Description": "SUPERPLASTICIZER EXT", "Qty": "7.00" },
+        { "Description": "ENVIRONMENTAL/ENVIRONNEMENT", "Qty": "7.00" },
+        { "Description": "FLEX FUEL FEE 1--INN", "Qty": "7.00" }
+      ]
+    }
+    """
+
+    let ticket = try TicketValidator.decode(json: json)
+    let normalized = TicketNormalizer.normalize(ticket: ticket)
+
+    #expect(normalized.mixVendor != nil)
+    #expect(normalized.mixCustomer.code == "RMXW45151NX")
+    #expect(normalized.mixCustomer.slump == "150+-30")
+    #expect(normalized.mixVendor?.code == "907489")
+}

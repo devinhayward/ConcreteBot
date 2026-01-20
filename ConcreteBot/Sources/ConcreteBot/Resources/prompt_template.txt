@@ -11,8 +11,14 @@ Rules:
 Use the text provided below as the only source of truth
 Do not rely on memory, assumptions, or prior responses
 Do not infer missing data
-PDF TEXT:
+PDF TEXT (filtered for key fields):
 <<PDF_TEXT>>
+MIX TABLE TEXT (from MIX header to INSTRUCTIONS header):
+<<MIX_TEXT>>
+MIX ROW LINES (headers removed; use ONLY these lines for mix fields):
+<<MIX_ROW_LINES>>
+EXTRA CHARGES TEXT (from EXTRA CHARGES header to WATER CONTENT header):
+<<EXTRA_CHARGES_TEXT>>
 STEP 2 - SCOPE CONTROL
 Extract data ONLY from the specified page(s) and ONLY for the specific ticket(s) shown on those page(s).
 Do not combine tickets
@@ -61,6 +67,15 @@ If and only if a Mix Vendor row exists per STEP 5, set "Mix Vendor" to an object
 
 If a field does not exist on the page, return null for that value.
 STEP 5 - MIX TABLE RULES
+Mix Customer must be sourced ONLY from the MIX table area that appears above the EXTRA CHARGES section.
+Never use EXTRA CHARGES lines for any Mix Customer field. If a Mix Customer row cannot be located in the MIX table, return all Mix Customer fields as null.
+The MIX table area starts at the "MIX" header and ends immediately before the "INSTRUCTIONS" header. Ignore any text outside that region when extracting Mix Customer/Mix Vendor.
+If no Qty/row data appears between the MIX header and the INSTRUCTIONS header, set all Mix Customer fields to null.
+Prefer MIX TABLE TEXT over the full PDF text when populating Mix Customer/Mix Vendor. If the two conflict, use MIX TABLE TEXT.
+For Mix Customer/Mix Vendor, use ONLY MIX TABLE TEXT. Do not use PDF TEXT or EXTRA CHARGES TEXT for any mix field.
+Ignore any line containing "FEE" or "CHARGE" for Mix Customer/Mix Vendor fields, even if it appears near the mix table in the raw PDF text.
+For Mix Customer/Mix Vendor, use ONLY MIX ROW LINES. If MIX ROW LINES is empty, set all Mix fields to null.
+All Mix Customer/Mix Vendor field values must be taken from MIX ROW LINES; do not invent or introduce text not present there.
 Mix Vendor row must physically exist on the ticket.
 If the Mix table contains only one visible mix row, that row is the Customer Mix only.
 If no second mix row is present beneath it in the table, then:
@@ -78,6 +93,14 @@ The "Slump" field must only contain the value shown in the Slump column for that
 Do not pull Slump from Extra Charges, notes, or any non-mix-table text (e.g., seasonal or fuel charges).
 Preserve units exactly as shown (e.g., m3)
 Preserve case, spacing, and wording after OCR normalization (see below)
+When OCR collapses columns into one line, split by column meaning:
+- Slump is a numeric value or range (often with "+-" or a single number) from the Slump column; ignore lines like "75%72HR N 20MM" for Slump.
+ - Description is the mix description/spec text (e.g., "CHRONOLIA 45MPA 75%72HR N 20MM"), not the code.
+ - Code is the discrete mix code token (often alphanumeric like RMXD...), not the slump value.
+If both a mix code token (e.g., starts with RMXD) and a numeric slump (e.g., 150+-30) appear on the same line, split them so Code gets the mix code and Slump gets the numeric slump; do not leave the slump in Description.
+If "CHRONOLIA 45MPA" and "75%72HR N 20MM" appear in the MIX table, concatenate them (single space) into Cust. Descr. and Description unless the columns clearly differ.
+If only one of Cust. Descr. or Description has non-empty text in the MIX table, copy that same text into the other field.
+Ignore standalone lines that look like strength tags (e.g., "IA 45MPA") unless they are the only available description text between MIX and INSTRUCTIONS.
 Vendor Mix Column Mapping Rule (MANDATORY)
 For the Vendor Mix row:
 If the Cust. Descr. column is visually blank on the ticket, return "Cust. Descr.": null

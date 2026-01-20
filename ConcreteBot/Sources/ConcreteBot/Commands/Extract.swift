@@ -79,11 +79,26 @@ enum Extract {
         if options.printPrompt {
             for pageNumber in pageNumbers {
                 let pageText = try extractPageText(document: document, pageNumber: pageNumber)
+                let condensedText = condensePageText(pageText, maxChars: 2000)
+                let mixText = extractSection(
+                    text: pageText,
+                    startMarkers: ["MIX"],
+                    endMarkers: ["INSTRUCTIONS"]
+                )
+                let mixRowLines = extractMixRowLines(mixText)
+                let extraChargesText = extractSection(
+                    text: pageText,
+                    startMarkers: ["EXTRA CHARGES"],
+                    endMarkers: ["WATER CONTENT", "MATERIAL REQUIRED"]
+                )
                 let prompt = renderPrompt(
                     template: promptTemplate,
                     pdfPath: options.pdfPath,
                     page: pageNumber,
-                    pageText: pageText
+                    pageText: condensedText,
+                    mixText: mixText,
+                    mixRowLines: mixRowLines,
+                    extraChargesText: extraChargesText
                 )
                 print(prompt)
                 print("")
@@ -92,13 +107,33 @@ enum Extract {
         }
 
         var tickets: [Ticket] = []
+        let totalPages = pageNumbers.count
+        var processedPages = 0
+        var totalDuration: TimeInterval = 0
+        updateProgress(current: processedPages, total: totalPages, averageSeconds: nil)
         for pageNumber in pageNumbers {
+            let pageStart = Date()
             let pageText = try extractPageText(document: document, pageNumber: pageNumber)
+            let condensedText = condensePageText(pageText, maxChars: 2000)
+            let mixText = extractSection(
+                text: pageText,
+                startMarkers: ["MIX"],
+                endMarkers: ["INSTRUCTIONS"]
+            )
+            let mixRowLines = extractMixRowLines(mixText)
+            let extraChargesText = extractSection(
+                text: pageText,
+                startMarkers: ["EXTRA CHARGES"],
+                endMarkers: ["WATER CONTENT", "MATERIAL REQUIRED"]
+            )
             let prompt = renderPrompt(
                 template: promptTemplate,
                 pdfPath: options.pdfPath,
                 page: pageNumber,
-                pageText: pageText
+                pageText: condensedText,
+                mixText: mixText,
+                mixRowLines: mixRowLines,
+                extraChargesText: extraChargesText
             )
 
             let modelResponse = try FoundationalModelsClient.run(prompt: prompt)
@@ -113,7 +148,12 @@ enum Extract {
                 try TicketValidator.validate(ticket: normalizedTicket)
                 tickets.append(normalizedTicket)
             }
+            processedPages += 1
+            totalDuration += Date().timeIntervalSince(pageStart)
+            let averageSeconds = totalDuration / Double(processedPages)
+            updateProgress(current: processedPages, total: totalPages, averageSeconds: averageSeconds)
         }
+        finishProgress(totalDuration: totalDuration)
 
         let outputDir = expandingTilde(in: options.outputDir)
         try FileWriter.write(tickets: tickets, outputDir: outputDir)
@@ -133,13 +173,19 @@ enum Extract {
         template: String,
         pdfPath: String,
         page: Int,
-        pageText: String
+        pageText: String,
+        mixText: String,
+        mixRowLines: String,
+        extraChargesText: String
     ) -> String {
         let fileName = URL(fileURLWithPath: pdfPath).lastPathComponent
         var rendered = template
         rendered = rendered.replacingOccurrences(of: "<<FILE_NAME>>", with: fileName)
         rendered = rendered.replacingOccurrences(of: "<<PAGE_NUMBER>>", with: String(page))
         rendered = rendered.replacingOccurrences(of: "<<PDF_TEXT>>", with: pageText)
+        rendered = rendered.replacingOccurrences(of: "<<MIX_TEXT>>", with: mixText)
+        rendered = rendered.replacingOccurrences(of: "<<MIX_ROW_LINES>>", with: mixRowLines)
+        rendered = rendered.replacingOccurrences(of: "<<EXTRA_CHARGES_TEXT>>", with: extraChargesText)
         return rendered
     }
 
@@ -207,5 +253,158 @@ enum Extract {
             return (path as NSString).expandingTildeInPath
         }
         return path
+    }
+
+    private static func extractSection(
+        text: String,
+        startMarkers: [String],
+        endMarkers: [String]
+    ) -> String {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let normalizedLines = lines.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }
+
+        func containsMarker(_ line: String, markers: [String]) -> Bool {
+            for marker in markers {
+                if line.contains(marker.uppercased()) {
+                    return true
+                }
+            }
+            return false
+        }
+
+        var startIndex: Int?
+        var endIndex: Int?
+        for (index, line) in normalizedLines.enumerated() {
+            if startIndex == nil, containsMarker(line, markers: startMarkers) {
+                startIndex = index
+                continue
+            }
+            if startIndex != nil, containsMarker(line, markers: endMarkers) {
+                endIndex = index
+                break
+            }
+        }
+
+        guard let start = startIndex, let end = endIndex, end > start else {
+            return ""
+        }
+
+        let slice = lines[(start + 1)..<end]
+        return slice.joined(separator: "\n")
+    }
+
+    private static func extractMixRowLines(_ mixText: String) -> String {
+        let headerTokens = [
+            "MIX",
+            "TERMS",
+            "CONDITIONS",
+            "ON LAST PAGE",
+            "QTY",
+            "CUST.",
+            "CUST",
+            "DESCR.",
+            "DESCR",
+            "DESCRIPTION",
+            "CODE",
+            "SLUMP"
+        ]
+        let lines = mixText.split(separator: "\n", omittingEmptySubsequences: false)
+        var filtered: [String] = []
+        var seen = Set<String>()
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let upper = trimmed.uppercased()
+            if headerTokens.contains(where: { upper == $0 || upper.contains($0) }) {
+                continue
+            }
+            if !seen.insert(trimmed).inserted {
+                continue
+            }
+            filtered.append(trimmed)
+        }
+        return filtered.joined(separator: "\n")
+    }
+
+    private static func condensePageText(_ text: String, maxChars: Int) -> String {
+        let keywords = [
+            "TICKET NO",
+            "ORDER NO",
+            "DELIVERY DATE",
+            "DELIVERY TIME",
+            "DELIVERY ADDR",
+            "DELIVERY ADDR.",
+            "CUSTOMER:",
+            "CUSTOMER NO.",
+            "JOBSITE",
+            "ADDRESS:",
+            "PO:",
+            "ORDER",
+            "VOLUME"
+        ]
+
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        var selected: [Substring] = []
+        var carry = 0
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            let upper = trimmed.uppercased()
+            if carry > 0 {
+                selected.append(line)
+                carry -= 1
+                continue
+            }
+            if keywords.contains(where: { upper.contains($0) }) {
+                selected.append(line)
+                carry = 2
+            }
+        }
+
+        var condensed = selected.joined(separator: "\n")
+        if condensed.isEmpty {
+            condensed = String(text.prefix(maxChars))
+        }
+        if condensed.count > maxChars {
+            condensed = String(condensed.prefix(maxChars))
+        }
+        return condensed
+    }
+
+    private static func updateProgress(current: Int, total: Int, averageSeconds: TimeInterval?) {
+        guard total > 0 else { return }
+        let width = 24
+        let fraction = Double(current) / Double(total)
+        let filled = Int(round(fraction * Double(width)))
+        let bar = String(repeating: "=", count: filled) + String(repeating: ".", count: max(0, width - filled))
+        let percent = Int(round(fraction * 100.0))
+        let etaText: String
+        if let averageSeconds, current < total {
+            let remaining = Double(total - current)
+            etaText = " ETA \(format(seconds: averageSeconds * remaining))"
+        } else {
+            etaText = ""
+        }
+        let line = "\rProcessing pages [\(bar)] \(current)/\(total) (\(percent)%)\(etaText)"
+        if let data = line.data(using: .utf8) {
+            FileHandle.standardError.write(data)
+        }
+    }
+
+    private static func finishProgress(totalDuration: TimeInterval) {
+        if let data = "\n".data(using: .utf8) {
+            FileHandle.standardError.write(data)
+        }
+        let line = "Total time: \(format(seconds: totalDuration))\n"
+        if let data = line.data(using: .utf8) {
+            FileHandle.standardError.write(data)
+        }
+    }
+
+    private static func format(seconds: TimeInterval) -> String {
+        let clamped = max(0, Int(seconds.rounded()))
+        let minutes = clamped / 60
+        let seconds = clamped % 60
+        return String(format: "%02d:%02d", minutes, seconds)
     }
 }

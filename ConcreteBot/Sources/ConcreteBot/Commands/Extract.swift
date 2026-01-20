@@ -86,6 +86,7 @@ enum Extract {
                     endMarkers: ["INSTRUCTIONS"]
                 )
                 let mixRowLines = extractMixRowLines(mixText)
+                let mixParsedHints = buildMixParsedHints(from: mixRowLines)
                 let extraChargesText = extractSection(
                     text: pageText,
                     startMarkers: ["EXTRA CHARGES"],
@@ -98,6 +99,7 @@ enum Extract {
                     pageText: condensedText,
                     mixText: mixText,
                     mixRowLines: mixRowLines,
+                    mixParsedHints: mixParsedHints,
                     extraChargesText: extraChargesText
                 )
                 print(prompt)
@@ -121,6 +123,7 @@ enum Extract {
                 endMarkers: ["INSTRUCTIONS"]
             )
             let mixRowLines = extractMixRowLines(mixText)
+            let mixParsedHints = buildMixParsedHints(from: mixRowLines)
             let extraChargesText = extractSection(
                 text: pageText,
                 startMarkers: ["EXTRA CHARGES"],
@@ -133,6 +136,7 @@ enum Extract {
                 pageText: condensedText,
                 mixText: mixText,
                 mixRowLines: mixRowLines,
+                mixParsedHints: mixParsedHints,
                 extraChargesText: extraChargesText
             )
 
@@ -176,6 +180,7 @@ enum Extract {
         pageText: String,
         mixText: String,
         mixRowLines: String,
+        mixParsedHints: String,
         extraChargesText: String
     ) -> String {
         let fileName = URL(fileURLWithPath: pdfPath).lastPathComponent
@@ -185,6 +190,7 @@ enum Extract {
         rendered = rendered.replacingOccurrences(of: "<<PDF_TEXT>>", with: pageText)
         rendered = rendered.replacingOccurrences(of: "<<MIX_TEXT>>", with: mixText)
         rendered = rendered.replacingOccurrences(of: "<<MIX_ROW_LINES>>", with: mixRowLines)
+        rendered = rendered.replacingOccurrences(of: "<<MIX_PARSED_HINTS>>", with: mixParsedHints)
         rendered = rendered.replacingOccurrences(of: "<<EXTRA_CHARGES_TEXT>>", with: extraChargesText)
         return rendered
     }
@@ -306,7 +312,11 @@ enum Extract {
             "DESCR",
             "DESCRIPTION",
             "CODE",
-            "SLUMP"
+            "SLUMP",
+            "PLANT",
+            "CERTIFICATE",
+            "ADDRESS",
+            "TICKET NO"
         ]
         let lines = mixText.split(separator: "\n", omittingEmptySubsequences: false)
         var filtered: [String] = []
@@ -323,7 +333,168 @@ enum Extract {
             }
             filtered.append(trimmed)
         }
-        return filtered.joined(separator: "\n")
+
+        guard let startIndex = firstMixDataIndex(in: filtered) else {
+            return ""
+        }
+        let mixLines = filtered[startIndex...]
+        return mixLines.joined(separator: "\n")
+    }
+
+    private static func buildMixParsedHints(from mixRowLines: String) -> String {
+        let lines = mixRowLines.split(separator: "\n", omittingEmptySubsequences: true)
+        let cubeSymbol = "\u{00B3}"
+        let strengthTagPattern = #"^[A-Z]{1,3}\s*\d+\s*MPA$"#
+        let qtyPattern = #"(\d+(?:\.\d+)?)\s*(m3|m³)"#
+        let codePattern = #"\b([A-Z]{2,}[A-Z0-9]*\d[A-Z0-9]*)\b"#
+        let slumpPattern = #"\b\d+(?:\.\d+)?\s*\+\-\s*\d+(?:\.\d+)?\b"#
+
+        var qty: String?
+        var code: String?
+        var slump: String?
+        var specParts: [String] = []
+        var strengthTags: [String] = []
+        var seenSpec = Set<String>()
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let normalized = trimmed.replacingOccurrences(of: cubeSymbol, with: "3")
+            let upper = normalized.uppercased()
+
+            if qty == nil, let match = firstMatch(in: normalized, pattern: qtyPattern) {
+                let number = match[1]
+                let unit = match[2].contains(cubeSymbol) ? "m³" : "m3"
+                qty = "\(number) \(unit)"
+            }
+
+            if code == nil, let match = firstMatch(in: upper, pattern: codePattern) {
+                code = match[1]
+            }
+
+            if slump == nil, let match = firstMatch(in: normalized, pattern: slumpPattern) {
+                slump = match[0].replacingOccurrences(of: " ", with: "")
+            }
+
+            if matches(trimmed, pattern: strengthTagPattern) {
+                strengthTags.append(trimmed)
+                continue
+            }
+
+            let isSpec = upper.contains("MPA") || upper.contains("%") || upper.contains("N 20MM")
+            let containsCode = code != nil && upper.contains(code!)
+            if isSpec && !containsCode {
+                if seenSpec.insert(trimmed).inserted {
+                    specParts.append(trimmed)
+                }
+            }
+        }
+
+        if specParts.isEmpty, let fallback = strengthTags.first {
+            specParts = [fallback]
+        }
+
+        let spec = dedupeSpecParts(specParts).joined(separator: " ")
+        let qtyValue = qty ?? ""
+        let codeValue = code ?? ""
+        let slumpValue = slump ?? ""
+
+        return """
+        Qty: \(qtyValue)
+        Code: \(codeValue)
+        Slump: \(slumpValue)
+        Spec: \(spec)
+        """
+    }
+
+    private static func dedupeSpecParts(_ parts: [String]) -> [String] {
+        guard parts.count > 1 else { return parts }
+        let normalized = parts.map { normalizeSpecLine($0) }
+        var result: [String] = []
+        for (index, part) in parts.enumerated() {
+            let current = normalized[index]
+            var isSubstring = false
+            for (otherIndex, other) in normalized.enumerated() {
+                guard index != otherIndex else { continue }
+                if other.contains(current) && other.count > current.count {
+                    isSubstring = true
+                    break
+                }
+            }
+            if !isSubstring {
+                result.append(part)
+            }
+        }
+        return result
+    }
+
+    private static func normalizeSpecLine(_ line: String) -> String {
+        let upper = line.uppercased()
+        let components = upper.split(whereSeparator: { $0.isWhitespace })
+        return components.joined(separator: " ")
+    }
+
+    private static func firstMatch(in text: String, pattern: String) -> [String]? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+        let range = NSRange(text.startIndex..., in: text)
+        guard let match = regex.firstMatch(in: text, options: [], range: range) else {
+            return nil
+        }
+        var results: [String] = []
+        for index in 0..<match.numberOfRanges {
+            let matchRange = match.range(at: index)
+            if let range = Range(matchRange, in: text) {
+                results.append(String(text[range]))
+            } else {
+                results.append("")
+            }
+        }
+        return results
+    }
+
+    private static func matches(_ text: String, pattern: String) -> Bool {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return false
+        }
+        let range = NSRange(text.startIndex..., in: text)
+        return regex.firstMatch(in: text, options: [], range: range) != nil
+    }
+
+    private static func firstMixDataIndex(in lines: [String]) -> Int? {
+        let cubeSymbol = "\u{00B3}"
+
+        func normalized(_ line: String) -> String {
+            line.replacingOccurrences(of: cubeSymbol, with: "3").uppercased()
+        }
+
+        func matches(_ line: String, pattern: String) -> Bool {
+            line.range(of: pattern, options: .regularExpression) != nil
+        }
+
+        for (index, line) in lines.enumerated() {
+            let upper = normalized(line)
+            if upper.contains("M3") {
+                return index
+            }
+        }
+
+        for (index, line) in lines.enumerated() {
+            let upper = normalized(line)
+            if matches(upper, pattern: #"^\s*\d+\.\d+\b"#) {
+                return index
+            }
+        }
+
+        for (index, line) in lines.enumerated() {
+            let upper = normalized(line)
+            if matches(upper, pattern: #"^\s*\d+\b"#) {
+                return index
+            }
+        }
+
+        return nil
     }
 
     private static func condensePageText(_ text: String, maxChars: Int) -> String {

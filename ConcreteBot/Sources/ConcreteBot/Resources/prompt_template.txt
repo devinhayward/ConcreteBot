@@ -17,6 +17,8 @@ MIX TABLE TEXT (from MIX header to INSTRUCTIONS header):
 <<MIX_TEXT>>
 MIX ROW LINES (headers removed; use ONLY these lines for mix fields):
 <<MIX_ROW_LINES>>
+MIX PARSED HINTS (from MIX ROW LINES; use when present):
+<<MIX_PARSED_HINTS>>
 EXTRA CHARGES TEXT (from EXTRA CHARGES header to WATER CONTENT header):
 <<EXTRA_CHARGES_TEXT>>
 STEP 2 - SCOPE CONTROL
@@ -76,6 +78,12 @@ For Mix Customer/Mix Vendor, use ONLY MIX TABLE TEXT. Do not use PDF TEXT or EXT
 Ignore any line containing "FEE" or "CHARGE" for Mix Customer/Mix Vendor fields, even if it appears near the mix table in the raw PDF text.
 For Mix Customer/Mix Vendor, use ONLY MIX ROW LINES. If MIX ROW LINES is empty, set all Mix fields to null.
 All Mix Customer/Mix Vendor field values must be taken from MIX ROW LINES; do not invent or introduce text not present there.
+Do not copy the entire MIX ROW LINES into every field. Each field must be populated from only the relevant line(s).
+If MIX PARSED HINTS has non-empty values, use them directly:
+- Qty -> "Qty"
+- Code -> "Code"
+- Slump -> "Slump"
+- Spec -> both "Cust. Descr." and "Description"
 Mix Vendor row must physically exist on the ticket.
 If the Mix table contains only one visible mix row, that row is the Customer Mix only.
 If no second mix row is present beneath it in the table, then:
@@ -101,6 +109,11 @@ If both a mix code token (e.g., starts with RMXD) and a numeric slump (e.g., 150
 If "CHRONOLIA 45MPA" and "75%72HR N 20MM" appear in the MIX table, concatenate them (single space) into Cust. Descr. and Description unless the columns clearly differ.
 If only one of Cust. Descr. or Description has non-empty text in the MIX table, copy that same text into the other field.
 Ignore standalone lines that look like strength tags (e.g., "IA 45MPA") unless they are the only available description text between MIX and INSTRUCTIONS.
+Field mapping guide (use MIX ROW LINES only):
+- Qty: use the line that contains the volume unit (m3/m³). Keep only the quantity and unit from that line.
+- Code: use the first code token (e.g., RMXD...) from the line that contains it.
+- Slump: use the numeric range (e.g., 150+-30) from the same line as the code if present; otherwise use a standalone numeric range line.
+- Cust. Descr./Description: combine non-code, non-qty spec lines (e.g., lines with MPA, % or "N 20MM") into the same value for both fields.
 Vendor Mix Column Mapping Rule (MANDATORY)
 For the Vendor Mix row:
 If the Cust. Descr. column is visually blank on the ticket, return "Cust. Descr.": null

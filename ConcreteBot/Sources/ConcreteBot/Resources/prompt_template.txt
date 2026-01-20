@@ -17,7 +17,7 @@ MIX TABLE TEXT (from MIX header to INSTRUCTIONS header):
 <<MIX_TEXT>>
 MIX ROW LINES (headers removed; use ONLY these lines for mix fields):
 <<MIX_ROW_LINES>>
-MIX PARSED HINTS (from MIX ROW LINES; use when present):
+MIX PARSED HINTS (row-wise from MIX ROW LINES; use when present):
 <<MIX_PARSED_HINTS>>
 EXTRA CHARGES TEXT (from EXTRA CHARGES header to WATER CONTENT header):
 <<EXTRA_CHARGES_TEXT>>
@@ -79,11 +79,17 @@ Ignore any line containing "FEE" or "CHARGE" for Mix Customer/Mix Vendor fields,
 For Mix Customer/Mix Vendor, use ONLY MIX ROW LINES. If MIX ROW LINES is empty, set all Mix fields to null.
 All Mix Customer/Mix Vendor field values must be taken from MIX ROW LINES; do not invent or introduce text not present there.
 Do not copy the entire MIX ROW LINES into every field. Each field must be populated from only the relevant line(s).
-If MIX PARSED HINTS has non-empty values, use them directly:
+If MIX PARSED HINTS includes "Row N" blocks, use:
+- Row 1 -> Mix Customer
+- Row 2 -> Mix Vendor (if present)
+Within each row block:
 - Qty -> "Qty"
 - Code -> "Code"
 - Slump -> "Slump"
 - Spec -> both "Cust. Descr." and "Description"
+If only Row 1 is present, treat it as the Customer row only.
+Multiple Qty lines in MIX ROW LINES always indicate multiple mix rows in order, even if MIX PARSED HINTS is incomplete.
+If Row 2 is present with any non-empty field, "Mix Vendor" must be an object (not null).
 Mix Vendor row must physically exist on the ticket.
 If the Mix table contains only one visible mix row, that row is the Customer Mix only.
 If no second mix row is present beneath it in the table, then:

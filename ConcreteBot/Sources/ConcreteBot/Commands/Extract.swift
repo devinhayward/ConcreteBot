@@ -35,7 +35,8 @@ enum ExtractError: Error, CustomStringConvertible {
 
 enum Extract {
     static func run(options: CLIOptions) throws {
-        let promptTemplate = try loadPromptTemplate()
+        let promptTemplate = try loadPromptTemplate(named: "prompt_template")
+        let compactPromptTemplate = try loadPromptTemplate(named: "prompt_template_compact")
 
         let response: String
         if let responseFile = options.responseFile {
@@ -79,7 +80,7 @@ enum Extract {
         if options.printPrompt {
             for pageNumber in pageNumbers {
                 let pageText = try extractPageText(document: document, pageNumber: pageNumber)
-                let condensedText = condensePageText(pageText, maxChars: 2000)
+                let condensedText = condensePageText(pageText, maxChars: 800)
                 let mixText = extractSection(
                     text: pageText,
                     startMarkers: ["MIX"],
@@ -94,6 +95,7 @@ enum Extract {
                 )
                 let prompt = renderPrompt(
                     template: promptTemplate,
+                    compactTemplate: compactPromptTemplate,
                     pdfPath: options.pdfPath,
                     page: pageNumber,
                     pageText: condensedText,
@@ -116,7 +118,7 @@ enum Extract {
         for pageNumber in pageNumbers {
             let pageStart = Date()
             let pageText = try extractPageText(document: document, pageNumber: pageNumber)
-            let condensedText = condensePageText(pageText, maxChars: 2000)
+            let condensedText = condensePageText(pageText, maxChars: 800)
             let mixText = extractSection(
                 text: pageText,
                 startMarkers: ["MIX"],
@@ -131,6 +133,7 @@ enum Extract {
             )
             let prompt = renderPrompt(
                 template: promptTemplate,
+                compactTemplate: compactPromptTemplate,
                 pdfPath: options.pdfPath,
                 page: pageNumber,
                 pageText: condensedText,
@@ -148,7 +151,8 @@ enum Extract {
 
             for json in jsonObjects {
                 let ticket = try TicketValidator.decode(json: json)
-                let normalizedTicket = TicketNormalizer.normalize(ticket: ticket)
+                let hintedTicket = applyMixParsedHints(ticket: ticket, mixParsedHints: mixParsedHints)
+                let normalizedTicket = TicketNormalizer.normalize(ticket: hintedTicket)
                 try TicketValidator.validate(ticket: normalizedTicket)
                 tickets.append(normalizedTicket)
             }
@@ -163,9 +167,9 @@ enum Extract {
         try FileWriter.write(tickets: tickets, outputDir: outputDir)
     }
 
-    private static func loadPromptTemplate() throws -> String {
+    private static func loadPromptTemplate(named name: String) throws -> String {
         guard let url = Bundle.module.url(
-            forResource: "prompt_template",
+            forResource: name,
             withExtension: "txt"
         ) else {
             throw ExtractError.missingPromptTemplate
@@ -173,8 +177,17 @@ enum Extract {
         return try String(contentsOf: url, encoding: .utf8)
     }
 
+    private struct PromptSections {
+        var pageText: String
+        var mixText: String
+        var mixRowLines: String
+        var mixParsedHints: String
+        var extraChargesText: String
+    }
+
     private static func renderPrompt(
         template: String,
+        compactTemplate: String,
         pdfPath: String,
         page: Int,
         pageText: String,
@@ -184,15 +197,224 @@ enum Extract {
         extraChargesText: String
     ) -> String {
         let fileName = URL(fileURLWithPath: pdfPath).lastPathComponent
-        var rendered = template
-        rendered = rendered.replacingOccurrences(of: "<<FILE_NAME>>", with: fileName)
-        rendered = rendered.replacingOccurrences(of: "<<PAGE_NUMBER>>", with: String(page))
-        rendered = rendered.replacingOccurrences(of: "<<PDF_TEXT>>", with: pageText)
-        rendered = rendered.replacingOccurrences(of: "<<MIX_TEXT>>", with: mixText)
-        rendered = rendered.replacingOccurrences(of: "<<MIX_ROW_LINES>>", with: mixRowLines)
-        rendered = rendered.replacingOccurrences(of: "<<MIX_PARSED_HINTS>>", with: mixParsedHints)
-        rendered = rendered.replacingOccurrences(of: "<<EXTRA_CHARGES_TEXT>>", with: extraChargesText)
-        return rendered
+        let maxSectionChars = 800
+        let maxExtraChargesChars = 2400
+        let condensedExtraChargesText = condenseExtraChargesText(extraChargesText)
+        let baseSections = PromptSections(
+            pageText: truncateSection(pageText, maxChars: maxSectionChars),
+            mixText: truncateSection(mixText, maxChars: maxSectionChars),
+            mixRowLines: truncateSection(mixRowLines, maxChars: maxSectionChars),
+            mixParsedHints: truncateSection(mixParsedHints, maxChars: maxSectionChars),
+            extraChargesText: truncateSection(condensedExtraChargesText, maxChars: maxExtraChargesChars)
+        )
+        let maxPromptChars = 9000
+
+        func buildPrompt(template: String, sections: PromptSections) -> String {
+            var rendered = template
+            rendered = rendered.replacingOccurrences(of: "<<FILE_NAME>>", with: fileName)
+            rendered = rendered.replacingOccurrences(of: "<<PAGE_NUMBER>>", with: String(page))
+            rendered = rendered.replacingOccurrences(of: "<<PDF_TEXT>>", with: sections.pageText)
+            rendered = rendered.replacingOccurrences(of: "<<MIX_TEXT>>", with: sections.mixText)
+            rendered = rendered.replacingOccurrences(of: "<<MIX_ROW_LINES>>", with: sections.mixRowLines)
+            rendered = rendered.replacingOccurrences(of: "<<MIX_PARSED_HINTS>>", with: sections.mixParsedHints)
+            rendered = rendered.replacingOccurrences(of: "<<EXTRA_CHARGES_TEXT>>", with: sections.extraChargesText)
+            return rendered
+        }
+
+        func renderWithTemplate(
+            _ template: String,
+            sections: PromptSections,
+            minPageText: Int,
+            minMixText: Int,
+            minExtraCharges: Int
+        ) -> String {
+            var sections = sections
+            var rendered = buildPrompt(template: template, sections: sections)
+            if rendered.count <= maxPromptChars {
+                return rendered
+            }
+            var overage = rendered.count - maxPromptChars
+            shrinkSection(&sections.mixText, overage: &overage, minChars: minMixText)
+            shrinkSection(&sections.pageText, overage: &overage, minChars: minPageText)
+            shrinkSection(&sections.extraChargesText, overage: &overage, minChars: minExtraCharges)
+            rendered = buildPrompt(template: template, sections: sections)
+            return rendered
+        }
+
+        let fullRendered = renderWithTemplate(
+            template,
+            sections: baseSections,
+            minPageText: 400,
+            minMixText: 200,
+            minExtraCharges: 600
+        )
+        if fullRendered.count <= maxPromptChars {
+            return fullRendered
+        }
+
+        var compactRendered = renderWithTemplate(
+            compactTemplate,
+            sections: baseSections,
+            minPageText: 300,
+            minMixText: 0,
+            minExtraCharges: 800
+        )
+        if compactRendered.count > maxPromptChars {
+            var tighterSections = baseSections
+            tighterSections.mixText = ""
+            compactRendered = renderWithTemplate(
+                compactTemplate,
+                sections: tighterSections,
+                minPageText: 200,
+                minMixText: 0,
+                minExtraCharges: 600
+            )
+        }
+
+        return compactRendered
+    }
+
+    private static func truncateSection(_ text: String, maxChars: Int) -> String {
+        guard maxChars > 0 else { return "" }
+        guard text.count > maxChars else { return text }
+        return truncateToBoundary(text, limit: maxChars)
+    }
+
+    private static func shrinkSection(_ text: inout String, overage: inout Int, minChars: Int) {
+        guard overage > 0 else { return }
+        let minChars = max(0, minChars)
+        let available = max(0, text.count - minChars)
+        guard available > 0 else { return }
+        let trimAmount = min(overage, available)
+        let target = text.count - trimAmount
+        let originalCount = text.count
+        text = truncateToBoundary(text, limit: target)
+        let actualTrim = max(0, originalCount - text.count)
+        overage = max(0, overage - actualTrim)
+    }
+
+    private static func truncateToBoundary(_ text: String, limit: Int) -> String {
+        guard limit > 0 else { return "" }
+        guard text.count > limit else { return text }
+        let prefix = String(text.prefix(limit))
+        if let range = prefix.range(of: "\n", options: .backwards) {
+            return String(prefix[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func condenseExtraChargesText(_ text: String) -> String {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        var cleaned: [String] = []
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if isExtraChargesHeaderLine(trimmed) {
+                continue
+            }
+            cleaned.append(trimmed)
+        }
+
+        var merged: [String] = []
+        var index = 0
+        while index < cleaned.count {
+            let line = cleaned[index]
+            if isQtyOnlyLine(line) {
+                let qty = line
+                if index + 1 < cleaned.count {
+                    let next = cleaned[index + 1]
+                    if !next.hasPrefix(qty),
+                       !next.contains(qty),
+                       containsLetters(next) {
+                        merged.append("\(qty) \(next)")
+                        index += 2
+                        continue
+                    }
+                }
+            }
+            merged.append(line)
+            index += 1
+        }
+
+        var result: [String] = []
+        var seen = Set<String>()
+        for line in merged {
+            let normalized = normalizeExtraChargeLine(line)
+            if seen.insert(normalized).inserted {
+                result.append(line)
+            }
+        }
+
+        return result.joined(separator: "\n")
+    }
+
+    private static func isExtraChargesHeaderLine(_ line: String) -> Bool {
+        let upper = line.uppercased()
+        if upper.contains("EXTRA CHARGES") || upper.contains("EXTRA-CHARGES") {
+            return true
+        }
+        if upper.contains("QTY") && upper.contains("DESCRIPTION") {
+            return true
+        }
+        return false
+    }
+
+    private static func isQtyOnlyLine(_ line: String) -> Bool {
+        matches(line, pattern: #"^\s*\d+(?:\.\d+)?\s*$"#)
+    }
+
+    private static func containsLetters(_ line: String) -> Bool {
+        line.rangeOfCharacter(from: CharacterSet.letters) != nil
+    }
+
+    private static func isIgnoredMixLine(_ line: String) -> Bool {
+        let upper = line.uppercased()
+        if upper.hasPrefix("ADDRESS") {
+            return true
+        }
+        if upper.hasPrefix("TICKET NO") {
+            return true
+        }
+        if upper.hasPrefix("PLANT NO") {
+            return true
+        }
+        if upper.hasPrefix("CERTIFICATE") {
+            return true
+        }
+        return false
+    }
+
+    private static func mergeSpecFragments(_ parts: [String]) -> [String] {
+        guard parts.count > 1 else { return parts }
+        var result: [String] = []
+        var index = 0
+        while index < parts.count {
+            let current = parts[index]
+            if index + 1 < parts.count {
+                let next = parts[index + 1]
+                if isAlphaToken(current), isAlphaToken(next),
+                   current.count <= 8, next.count <= 6 {
+                    result.append(current + next)
+                    index += 2
+                    continue
+                }
+            }
+            result.append(current)
+            index += 1
+        }
+        return result
+    }
+
+    private static func isAlphaToken(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        return trimmed.allSatisfy { $0.isLetter }
+    }
+
+    private static func normalizeExtraChargeLine(_ line: String) -> String {
+        let upper = line.uppercased()
+        let collapsed = upper.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        return collapsed
     }
 
     private static func splitJSONObjects(from text: String) -> [String] {
@@ -300,15 +522,16 @@ enum Extract {
     }
 
     private static func extractMixRowLines(_ mixText: String) -> String {
-        let headerTokens = [
+        let headerWords: Set<String> = [
             "MIX",
+            "TABLE",
             "TERMS",
             "CONDITIONS",
-            "ON LAST PAGE",
+            "ON",
+            "LAST",
+            "PAGE",
             "QTY",
-            "CUST.",
             "CUST",
-            "DESCR.",
             "DESCR",
             "DESCRIPTION",
             "CODE",
@@ -316,19 +539,25 @@ enum Extract {
             "PLANT",
             "CERTIFICATE",
             "ADDRESS",
-            "TICKET NO"
+            "TICKET",
+            "NO"
         ]
+        func isHeaderLine(_ line: String) -> Bool {
+            let cleaned = line.uppercased().replacingOccurrences(
+                of: #"[^A-Z0-9]+"#,
+                with: " ",
+                options: .regularExpression
+            )
+            let tokens = cleaned.split(whereSeparator: { $0.isWhitespace })
+            guard !tokens.isEmpty else { return false }
+            return tokens.allSatisfy { headerWords.contains(String($0)) }
+        }
         let lines = mixText.split(separator: "\n", omittingEmptySubsequences: false)
         var filtered: [String] = []
-        var seen = Set<String>()
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
-            let upper = trimmed.uppercased()
-            if headerTokens.contains(where: { upper == $0 || upper.contains($0) }) {
-                continue
-            }
-            if !seen.insert(trimmed).inserted {
+            if isHeaderLine(trimmed) {
                 continue
             }
             filtered.append(trimmed)
@@ -341,25 +570,157 @@ enum Extract {
         return mixLines.joined(separator: "\n")
     }
 
+    private struct MixParsedHintRow {
+        var qty: String
+        var code: String
+        var slump: String
+        var spec: String
+    }
+
     private static func buildMixParsedHints(from mixRowLines: String) -> String {
-        let lines = mixRowLines.split(separator: "\n", omittingEmptySubsequences: true)
+        let rawLines = mixRowLines.split(separator: "\n", omittingEmptySubsequences: true)
+        let lines = rawLines
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !lines.isEmpty else {
+            return formatMixParsedHints([MixParsedHintRow(qty: "", code: "", slump: "", spec: "")])
+        }
+
         let cubeSymbol = "\u{00B3}"
         let strengthTagPattern = #"^[A-Z]{1,3}\s*\d+\s*MPA$"#
         let qtyPattern = #"(\d+(?:\.\d+)?)\s*(m3|m³)"#
+        let qtyRegex = #"\b\d+(?:\.\d+)?\s*(?:m3|m³)\b"#
         let codePattern = #"\b([A-Z]{2,}[A-Z0-9]*\d[A-Z0-9]*)\b"#
         let slumpPattern = #"\b\d+(?:\.\d+)?\s*\+\-\s*\d+(?:\.\d+)?\b"#
 
+        var qtyEntries: [(qty: String, remainder: String?)] = []
+        var codeCandidates: [String] = []
+        var slumpCandidates: [String] = []
+        var specCandidates: [String] = []
+        var strengthTags: [String] = []
+        var seenCodes = Set<String>()
+        var seenSlumps = Set<String>()
+        var seenSpecs = Set<String>()
+
+        for line in lines {
+            let normalized = line.replacingOccurrences(of: cubeSymbol, with: "3")
+            let upper = normalized.uppercased()
+
+            if let match = firstMatch(in: normalized, pattern: qtyPattern) {
+                let number = match[1]
+                let unit = match[2].contains(cubeSymbol) ? "m³" : "m3"
+                let qtyValue = "\(number) \(unit)"
+                let remainder = line
+                    .replacingOccurrences(of: qtyRegex, with: "", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let cleanedRemainder = stripLeadingQty(remainder)
+                let remainderValue = cleanedRemainder.isEmpty ? nil : cleanedRemainder
+                qtyEntries.append((qtyValue, remainderValue))
+            }
+
+            var hasCodeOrSlump = false
+            if let match = firstMatch(in: upper, pattern: codePattern) {
+                let codeValue = match[1]
+                if seenCodes.insert(codeValue).inserted {
+                    codeCandidates.append(codeValue)
+                }
+                hasCodeOrSlump = true
+            } else if let numericCode = digitsOnlyCode(from: line) {
+                if seenCodes.insert(numericCode).inserted {
+                    codeCandidates.append(numericCode)
+                }
+                hasCodeOrSlump = true
+            }
+
+            if let match = firstMatch(in: normalized, pattern: slumpPattern) {
+                let slumpValue = match[0].replacingOccurrences(of: " ", with: "")
+                if seenSlumps.insert(slumpValue).inserted {
+                    slumpCandidates.append(slumpValue)
+                }
+                hasCodeOrSlump = true
+            }
+
+            if matches(line, pattern: strengthTagPattern) {
+                strengthTags.append(line)
+                continue
+            }
+
+            let isQtyLine = matches(normalized, pattern: qtyPattern)
+            if !isQtyLine && !hasCodeOrSlump {
+                if isIgnoredMixLine(line) {
+                    continue
+                }
+                let cleanedSpec = stripLeadingQty(line)
+                guard !cleanedSpec.isEmpty else { continue }
+                if seenSpecs.insert(cleanedSpec).inserted {
+                    specCandidates.append(cleanedSpec)
+                }
+            }
+        }
+
+        if qtyEntries.count <= 1 {
+            let hint = parseSingleRowHints(
+                lines: lines,
+                strengthTags: strengthTags,
+                qtyPattern: qtyPattern,
+                codePattern: codePattern,
+                slumpPattern: slumpPattern
+            )
+            return formatMixParsedHints([hint])
+        }
+
+        let rowCount = min(qtyEntries.count, 2)
+        var rowSpecs = Array(repeating: [String](), count: rowCount)
+        for index in 0..<rowCount {
+            if let remainder = qtyEntries[index].remainder, !remainder.isEmpty {
+                rowSpecs[index].append(remainder)
+            }
+        }
+
+        for line in specCandidates {
+            let upper = line.uppercased()
+            if isCustomerSpecLine(upper) {
+                rowSpecs[0].append(line)
+            } else if rowCount > 1, isVendorSpecLine(upper) {
+                rowSpecs[1].append(line)
+            } else {
+                rowSpecs[0].append(line)
+            }
+        }
+
+        if rowSpecs[0].isEmpty, let fallback = strengthTags.first {
+            rowSpecs[0].append(fallback)
+        }
+
+        var hints: [MixParsedHintRow] = []
+        for index in 0..<rowCount {
+            let qtyValue = qtyEntries[index].qty
+            let codeValue = index < codeCandidates.count ? codeCandidates[index] : ""
+            let slumpValue = index < slumpCandidates.count ? slumpCandidates[index] : ""
+            let specLines = mergeSpecFragments(rowSpecs[index])
+            let specValue = dedupeSpecParts(specLines).joined(separator: " ")
+            hints.append(MixParsedHintRow(qty: qtyValue, code: codeValue, slump: slumpValue, spec: specValue))
+        }
+
+        return formatMixParsedHints(hints)
+    }
+
+    private static func parseSingleRowHints(
+        lines: [String],
+        strengthTags: [String],
+        qtyPattern: String,
+        codePattern: String,
+        slumpPattern: String
+    ) -> MixParsedHintRow {
+        let cubeSymbol = "\u{00B3}"
         var qty: String?
         var code: String?
         var slump: String?
         var specParts: [String] = []
-        var strengthTags: [String] = []
         var seenSpec = Set<String>()
 
         for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-            let normalized = trimmed.replacingOccurrences(of: cubeSymbol, with: "3")
+            let normalized = line.replacingOccurrences(of: cubeSymbol, with: "3")
             let upper = normalized.uppercased()
 
             if qty == nil, let match = firstMatch(in: normalized, pattern: qtyPattern) {
@@ -370,22 +731,23 @@ enum Extract {
 
             if code == nil, let match = firstMatch(in: upper, pattern: codePattern) {
                 code = match[1]
+            } else if code == nil, let numericCode = digitsOnlyCode(from: line) {
+                code = numericCode
             }
 
             if slump == nil, let match = firstMatch(in: normalized, pattern: slumpPattern) {
                 slump = match[0].replacingOccurrences(of: " ", with: "")
             }
 
-            if matches(trimmed, pattern: strengthTagPattern) {
-                strengthTags.append(trimmed)
+            if isIgnoredMixLine(line) {
                 continue
             }
 
-            let isSpec = upper.contains("MPA") || upper.contains("%") || upper.contains("N 20MM")
+            let isSpec = isCustomerSpecLine(upper) || containsLetters(line)
             let containsCode = code != nil && upper.contains(code!)
             if isSpec && !containsCode {
-                if seenSpec.insert(trimmed).inserted {
-                    specParts.append(trimmed)
+                if seenSpec.insert(line).inserted {
+                    specParts.append(line)
                 }
             }
         }
@@ -394,17 +756,300 @@ enum Extract {
             specParts = [fallback]
         }
 
-        let spec = dedupeSpecParts(specParts).joined(separator: " ")
-        let qtyValue = qty ?? ""
-        let codeValue = code ?? ""
-        let slumpValue = slump ?? ""
+        let spec = dedupeSpecParts(mergeSpecFragments(specParts)).joined(separator: " ")
+        return MixParsedHintRow(qty: qty ?? "", code: code ?? "", slump: slump ?? "", spec: spec)
+    }
 
-        return """
-        Qty: \(qtyValue)
-        Code: \(codeValue)
-        Slump: \(slumpValue)
-        Spec: \(spec)
-        """
+    private static func formatMixParsedHints(_ hints: [MixParsedHintRow]) -> String {
+        var lines: [String] = []
+        for (index, hint) in hints.enumerated() {
+            lines.append("Row \(index + 1):")
+            lines.append("Qty: \(hint.qty)")
+            lines.append("Code: \(hint.code)")
+            lines.append("Slump: \(hint.slump)")
+            lines.append("Spec: \(hint.spec)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func applyMixParsedHints(ticket: Ticket, mixParsedHints: String) -> Ticket {
+        let rows = parseMixParsedHints(mixParsedHints)
+        if rows.isEmpty {
+            return ticket
+        }
+
+        var mixCustomer = ticket.mixCustomer
+        if let customer = rows.first {
+            let hintSpec = sanitizeHintSpec(customer.spec)
+            let hintQty = trimmedNonEmpty(customer.qty)
+            let hintCode = trimmedNonEmpty(customer.code)
+            let hintSlump = trimmedNonEmpty(customer.slump)
+            if shouldUseHint(existing: mixCustomer.customerDescription, hint: hintSpec) {
+                mixCustomer = MixRow(
+                    qty: mixCustomer.qty,
+                    customerDescription: hintSpec,
+                    description: mixCustomer.description,
+                    code: mixCustomer.code,
+                    slump: mixCustomer.slump
+                )
+            }
+            if shouldUseHint(existing: mixCustomer.description, hint: hintSpec) {
+                mixCustomer = MixRow(
+                    qty: mixCustomer.qty,
+                    customerDescription: mixCustomer.customerDescription,
+                    description: hintSpec,
+                    code: mixCustomer.code,
+                    slump: mixCustomer.slump
+                )
+            }
+            if mixCustomer.qty?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true, let hintQty {
+                mixCustomer = MixRow(
+                    qty: hintQty,
+                    customerDescription: mixCustomer.customerDescription,
+                    description: mixCustomer.description,
+                    code: mixCustomer.code,
+                    slump: mixCustomer.slump
+                )
+            }
+            if mixCustomer.code?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true, let hintCode {
+                mixCustomer = MixRow(
+                    qty: mixCustomer.qty,
+                    customerDescription: mixCustomer.customerDescription,
+                    description: mixCustomer.description,
+                    code: hintCode,
+                    slump: mixCustomer.slump
+                )
+            }
+            if mixCustomer.slump?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true, let hintSlump {
+                mixCustomer = MixRow(
+                    qty: mixCustomer.qty,
+                    customerDescription: mixCustomer.customerDescription,
+                    description: mixCustomer.description,
+                    code: mixCustomer.code,
+                    slump: hintSlump
+                )
+            }
+        }
+
+        var mixVendor = ticket.mixVendor
+        if rows.count > 1 {
+            let vendor = rows[1]
+            let qty = trimmedNonEmpty(vendor.qty)
+            let code = trimmedNonEmpty(vendor.code)
+            let slump = trimmedNonEmpty(vendor.slump)
+            let description = sanitizeHintSpec(vendor.spec)
+            if mixVendor == nil, qty != nil || code != nil || slump != nil || description != nil {
+                mixVendor = MixRow(
+                    qty: qty,
+                    customerDescription: nil,
+                    description: description,
+                    code: code,
+                    slump: slump
+                )
+            } else if var existing = mixVendor {
+                if existing.qty == nil, let qty {
+                    existing = MixRow(
+                        qty: qty,
+                        customerDescription: existing.customerDescription,
+                        description: existing.description,
+                        code: existing.code,
+                        slump: existing.slump
+                    )
+                }
+                if existing.code == nil, let code {
+                    existing = MixRow(
+                        qty: existing.qty,
+                        customerDescription: existing.customerDescription,
+                        description: existing.description,
+                        code: code,
+                        slump: existing.slump
+                    )
+                }
+                if existing.slump == nil, let slump {
+                    existing = MixRow(
+                        qty: existing.qty,
+                        customerDescription: existing.customerDescription,
+                        description: existing.description,
+                        code: existing.code,
+                        slump: slump
+                    )
+                }
+                if shouldUseHint(existing: existing.description, hint: description) {
+                    existing = MixRow(
+                        qty: existing.qty,
+                        customerDescription: existing.customerDescription,
+                        description: description,
+                        code: existing.code,
+                        slump: existing.slump
+                    )
+                }
+                mixVendor = existing
+            }
+        }
+
+        if let vendor = mixVendor,
+           shouldNullVendorCustomerDescription(
+            customerDescription: vendor.customerDescription,
+            description: vendor.description
+           ) {
+            mixVendor = MixRow(
+                qty: vendor.qty,
+                customerDescription: nil,
+                description: vendor.description,
+                code: vendor.code,
+                slump: vendor.slump
+            )
+        }
+
+        return Ticket(
+            ticketNumber: ticket.ticketNumber,
+            deliveryDate: ticket.deliveryDate,
+            deliveryTime: ticket.deliveryTime,
+            deliveryAddress: ticket.deliveryAddress,
+            mixCustomer: mixCustomer,
+            mixVendor: mixVendor,
+            extraCharges: ticket.extraCharges
+        )
+    }
+
+    private static func parseMixParsedHints(_ mixParsedHints: String) -> [MixParsedHintRow] {
+        let lines = mixParsedHints.split(separator: "\n", omittingEmptySubsequences: true)
+        var rows: [MixParsedHintRow] = []
+        var current: MixParsedHintRow? = nil
+
+        for lineSubstring in lines {
+            let line = lineSubstring.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.lowercased().hasPrefix("row ") {
+                if let current {
+                    rows.append(current)
+                }
+                current = MixParsedHintRow(qty: "", code: "", slump: "", spec: "")
+                continue
+            }
+
+            if current == nil {
+                current = MixParsedHintRow(qty: "", code: "", slump: "", spec: "")
+            }
+
+            if let value = value(after: "Qty:", in: line) {
+                current?.qty = value
+                continue
+            }
+            if let value = value(after: "Code:", in: line) {
+                current?.code = value
+                continue
+            }
+            if let value = value(after: "Slump:", in: line) {
+                current?.slump = value
+                continue
+            }
+            if let value = value(after: "Spec:", in: line) {
+                current?.spec = value
+                continue
+            }
+        }
+
+        if let current {
+            rows.append(current)
+        }
+
+        return rows
+    }
+
+    private static func value(after prefix: String, in line: String) -> String? {
+        let lowerLine = line.lowercased()
+        let lowerPrefix = prefix.lowercased()
+        guard lowerLine.hasPrefix(lowerPrefix) else { return nil }
+        let start = line.index(line.startIndex, offsetBy: prefix.count)
+        return line[start...].trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func sanitizeHintSpec(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let stripped = stripLeadingQty(value)
+        let cleaned = removeIgnoredMixPrefixes(from: stripped)
+        return trimmedNonEmpty(cleaned)
+    }
+
+    private static func stripLeadingQty(_ value: String) -> String {
+        let pattern = #"^\s*\d+(?:\.\d+)?\s*m(?:3|³)\s*"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return value.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let range = NSRange(value.startIndex..., in: value)
+        let stripped = regex.stringByReplacingMatches(in: value, options: [], range: range, withTemplate: "")
+        return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func removeIgnoredMixPrefixes(from value: String) -> String {
+        let patterns = [
+            #"^ADDRESS:\s*"#,
+            #"^TICKET\s*NO\.?:\s*"#,
+            #"^PLANT\s*NO\.?:\s*"#,
+            #"^CERTIFICATE:\s*"#
+        ]
+        var result = value
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
+                let range = NSRange(result.startIndex..., in: result)
+                result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
+            }
+        }
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func trimmedNonEmpty(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func shouldUseHint(existing: String?, hint: String?) -> Bool {
+        guard let hint = trimmedNonEmpty(hint) else { return false }
+        guard let existing = trimmedNonEmpty(existing) else { return true }
+        if existing == hint { return false }
+        if existing.count < min(8, hint.count) {
+            return true
+        }
+        if hint.hasPrefix(existing), hint.count > existing.count + 2 {
+            return true
+        }
+        return false
+    }
+
+    private static func shouldNullVendorCustomerDescription(
+        customerDescription: String?,
+        description: String?
+    ) -> Bool {
+        guard let customerDescription = trimmedNonEmpty(customerDescription) else { return false }
+        guard let description = trimmedNonEmpty(description) else { return false }
+        let normalizedCustomer = normalizeSpecLine(customerDescription)
+        let normalizedDescription = normalizeSpecLine(description)
+        if normalizedCustomer == normalizedDescription {
+            return true
+        }
+        if normalizedDescription.hasPrefix(normalizedCustomer) {
+            return true
+        }
+        if normalizedCustomer.hasPrefix(normalizedDescription) {
+            return true
+        }
+        return false
+    }
+
+    private static func digitsOnlyCode(from line: String) -> String? {
+        let stripped = line.replacingOccurrences(of: " ", with: "")
+        guard stripped.count >= 4 else { return nil }
+        guard stripped.allSatisfy({ $0.isNumber }) else { return nil }
+        return stripped
+    }
+
+    private static func isCustomerSpecLine(_ line: String) -> Bool {
+        line.contains("MPA") || line.contains("%") || line.contains("N 20MM") || line.contains("20MM")
+    }
+
+    private static func isVendorSpecLine(_ line: String) -> Bool {
+        line.contains("DEGREE")
     }
 
     private static func dedupeSpecParts(_ parts: [String]) -> [String] {
@@ -475,14 +1120,7 @@ enum Extract {
 
         for (index, line) in lines.enumerated() {
             let upper = normalized(line)
-            if upper.contains("M3") {
-                return index
-            }
-        }
-
-        for (index, line) in lines.enumerated() {
-            let upper = normalized(line)
-            if matches(upper, pattern: #"^\s*\d+\.\d+\b"#) {
+            if matches(upper, pattern: #"\b\d+(?:\.\d+)?\s*M(?:3|³)\b"#) {
                 return index
             }
         }

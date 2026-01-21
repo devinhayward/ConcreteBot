@@ -18,7 +18,8 @@ REQUIRED JSON OUTPUT
     "Slump": ""
   },
 
-  "Mix Vendor": null,
+  "Mix Additional 1": null,
+  "Mix Additional 2": null,
 
   "Extra Charges": [
     {
@@ -28,13 +29,13 @@ REQUIRED JSON OUTPUT
   ]
 }
 
-If a Mix Vendor row exists, set "Mix Vendor" to an object with keys: "Qty", "Cust. Descr.", "Description", "Code", "Slump".
+If an additional mix row exists, set "Mix Additional 1"/"Mix Additional 2" to an object with keys: "Qty", "Cust. Descr.", "Description", "Code", "Slump".
 
 MIX RULES
-- Use ONLY MIX ROW LINES for Mix Customer/Mix Vendor fields.
-- If MIX PARSED HINTS has Row 1 and Row 2, map Row 1 -> Mix Customer, Row 2 -> Mix Vendor.
-- If only one mix row is present, Mix Vendor must be null.
-- Do not copy Mix Customer values into Mix Vendor.
+- Use ONLY MIX ROW LINES for Mix Customer/Additional Mix fields.
+- If MIX PARSED HINTS has Row 1/2/3, map Row 1 -> Mix Customer, Row 2 -> Mix Additional 1, Row 3 -> Mix Additional 2.
+- If only one mix row is present, Mix Additional 1/2 must be null.
+- Do not copy Mix Customer values into Additional rows.
 - If a column is blank, return null for that field.
 - Use Spec for both "Cust. Descr." and "Description".
 - Slump must only come from the mix row; do not use Extra Charges.

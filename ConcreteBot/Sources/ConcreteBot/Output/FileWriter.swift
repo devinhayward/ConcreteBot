@@ -56,10 +56,15 @@ enum FileWriter {
         lines.append(formatField("Delivery Time", value: ticket.deliveryTime, level: 1, trailingComma: true))
         lines.append(formatField("Delivery Address", value: ticket.deliveryAddress, level: 1, trailingComma: true))
         lines.append(formatMixRowField("Mix Customer", row: ticket.mixCustomer, level: 1, trailingComma: true))
-        if let mixVendor = ticket.mixVendor {
-            lines.append(formatMixRowField("Mix Vendor", row: mixVendor, level: 1, trailingComma: true))
+        if let mixAdditional1 = ticket.mixAdditional1 {
+            lines.append(formatMixRowField("Mix Additional 1", row: mixAdditional1, level: 1, trailingComma: true))
         } else {
-            lines.append(formatNullField("Mix Vendor", level: 1, trailingComma: true))
+            lines.append(formatNullField("Mix Additional 1", level: 1, trailingComma: true))
+        }
+        if let mixAdditional2 = ticket.mixAdditional2 {
+            lines.append(formatMixRowField("Mix Additional 2", row: mixAdditional2, level: 1, trailingComma: true))
+        } else {
+            lines.append(formatNullField("Mix Additional 2", level: 1, trailingComma: true))
         }
         lines.append(formatExtraChargesField("Extra Charges", charges: ticket.extraCharges, level: 1, trailingComma: false))
         lines.append("}")

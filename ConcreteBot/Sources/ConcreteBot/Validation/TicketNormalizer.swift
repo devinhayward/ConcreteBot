@@ -2,12 +2,13 @@ import Foundation
 
 enum TicketNormalizer {
     static func normalize(ticket: Ticket) -> Ticket {
+        let normalizedExtraCharges = ticket.extraCharges.map { normalize(extraCharge: $0) }
         let extraChargeQtys = Set(
-            ticket.extraCharges
+            normalizedExtraCharges
                 .compactMap { $0.qty?.trimmedNonEmpty }
         )
         let extraChargeDescriptions = Set(
-            ticket.extraCharges
+            normalizedExtraCharges
                 .compactMap { $0.description?.trimmedNonEmpty?.lowercased() }
         )
 
@@ -17,7 +18,14 @@ enum TicketNormalizer {
             extraChargeDescriptions: extraChargeDescriptions
         )
 
-        let mixVendor = ticket.mixVendor.map { mixRow in
+        let mixAdditional1 = ticket.mixAdditional1.map { mixRow in
+            normalize(
+                mixRow: mixRow,
+                extraChargeQtys: extraChargeQtys,
+                extraChargeDescriptions: extraChargeDescriptions
+            )
+        }
+        let mixAdditional2 = ticket.mixAdditional2.map { mixRow in
             normalize(
                 mixRow: mixRow,
                 extraChargeQtys: extraChargeQtys,
@@ -31,9 +39,44 @@ enum TicketNormalizer {
             deliveryTime: ticket.deliveryTime,
             deliveryAddress: ticket.deliveryAddress,
             mixCustomer: mixCustomer,
-            mixVendor: mixVendor,
-            extraCharges: ticket.extraCharges
+            mixAdditional1: mixAdditional1,
+            mixAdditional2: mixAdditional2,
+            extraCharges: normalizedExtraCharges
         )
+    }
+
+    private static func normalize(extraCharge: ExtraCharge) -> ExtraCharge {
+        let qty = extraCharge.qty?.trimmedNonEmpty
+        let description = extraCharge.description?.trimmedNonEmpty
+        guard let qty, let description else {
+            return extraCharge
+        }
+
+        let qtyNumeric = numericPrefix(in: qty)
+        let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let (number, remainder) = splitLeadingNumber(from: trimmed),
+           let qtyNumeric,
+           number == qtyNumeric,
+           let remainder = remainder.trimmedNonEmpty {
+            return ExtraCharge(description: remainder, qty: qty)
+        }
+
+        return extraCharge
+    }
+
+    private static func splitLeadingNumber(from value: String) -> (number: String, remainder: String)? {
+        let pattern = #"^\s*(\d+(?:\.\d+)?)\s+(.+)$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(value.startIndex..., in: value)
+        guard let match = regex.firstMatch(in: value, range: range) else { return nil }
+        guard match.numberOfRanges >= 3,
+              let numberRange = Range(match.range(at: 1), in: value),
+              let remainderRange = Range(match.range(at: 2), in: value) else {
+            return nil
+        }
+        let number = String(value[numberRange])
+        let remainder = String(value[remainderRange])
+        return (number, remainder)
     }
 
     private static func normalize(

@@ -55,7 +55,8 @@ Use exactly the following field names and hierarchy:
     "Slump": ""
   },
 
-  "Mix Vendor": null,
+  "Mix Additional 1": null,
+  "Mix Additional 2": null,
 
   "Extra Charges": [
     {
@@ -65,23 +66,24 @@ Use exactly the following field names and hierarchy:
   ]
 }
 
-If and only if a Mix Vendor row exists per STEP 5, set "Mix Vendor" to an object with keys exactly: "Qty", "Cust. Descr.", "Description", "Code", "Slump"; otherwise leave "Mix Vendor" as null.
+If and only if an additional mix row exists per STEP 5, set "Mix Additional 1" or "Mix Additional 2" to an object with keys exactly: "Qty", "Cust. Descr.", "Description", "Code", "Slump"; otherwise leave it as null.
 
 If a field does not exist on the page, return null for that value.
 STEP 5 - MIX TABLE RULES
 Mix Customer must be sourced ONLY from the MIX table area that appears above the EXTRA CHARGES section.
 Never use EXTRA CHARGES lines for any Mix Customer field. If a Mix Customer row cannot be located in the MIX table, return all Mix Customer fields as null.
-The MIX table area starts at the "MIX" header and ends immediately before the "INSTRUCTIONS" header. Ignore any text outside that region when extracting Mix Customer/Mix Vendor.
+The MIX table area starts at the "MIX" header and ends immediately before the "INSTRUCTIONS" header. Ignore any text outside that region when extracting Mix Customer/Mix Additional rows.
 If no Qty/row data appears between the MIX header and the INSTRUCTIONS header, set all Mix Customer fields to null.
-Prefer MIX TABLE TEXT over the full PDF text when populating Mix Customer/Mix Vendor. If the two conflict, use MIX TABLE TEXT.
-For Mix Customer/Mix Vendor, use ONLY MIX TABLE TEXT. Do not use PDF TEXT or EXTRA CHARGES TEXT for any mix field.
-Ignore any line containing "FEE" or "CHARGE" for Mix Customer/Mix Vendor fields, even if it appears near the mix table in the raw PDF text.
-For Mix Customer/Mix Vendor, use ONLY MIX ROW LINES. If MIX ROW LINES is empty, set all Mix fields to null.
-All Mix Customer/Mix Vendor field values must be taken from MIX ROW LINES; do not invent or introduce text not present there.
+Prefer MIX TABLE TEXT over the full PDF text when populating Mix Customer/Mix Additional rows. If the two conflict, use MIX TABLE TEXT.
+For Mix Customer/Mix Additional rows, use ONLY MIX TABLE TEXT. Do not use PDF TEXT or EXTRA CHARGES TEXT for any mix field.
+Ignore any line containing "FEE" or "CHARGE" for Mix Customer/Mix Additional fields, even if it appears near the mix table in the raw PDF text.
+For Mix Customer/Mix Additional rows, use ONLY MIX ROW LINES. If MIX ROW LINES is empty, set all Mix fields to null.
+All Mix Customer/Mix Additional field values must be taken from MIX ROW LINES; do not invent or introduce text not present there.
 Do not copy the entire MIX ROW LINES into every field. Each field must be populated from only the relevant line(s).
 If MIX PARSED HINTS includes "Row N" blocks, use:
 - Row 1 -> Mix Customer
-- Row 2 -> Mix Vendor (if present)
+- Row 2 -> Mix Additional 1 (if present)
+- Row 3 -> Mix Additional 2 (if present)
 Within each row block:
 - Qty -> "Qty"
 - Code -> "Code"
@@ -89,16 +91,17 @@ Within each row block:
 - Spec -> both "Cust. Descr." and "Description"
 If only Row 1 is present, treat it as the Customer row only.
 Multiple Qty lines in MIX ROW LINES always indicate multiple mix rows in order, even if MIX PARSED HINTS is incomplete.
-If Row 2 is present with any non-empty field, "Mix Vendor" must be an object (not null).
-Mix Vendor row must physically exist on the ticket.
+If Row 2 is present with any non-empty field, "Mix Additional 1" must be an object (not null).
+If Row 3 is present with any non-empty field, "Mix Additional 2" must be an object (not null).
+Additional mix rows must physically exist on the ticket.
 If the Mix table contains only one visible mix row, that row is the Customer Mix only.
 If no second mix row is present beneath it in the table, then:
-"Mix Vendor" must be returned as null
+"Mix Additional 1" must be returned as null
 Do not duplicate, infer, mirror, or re-use the Customer Mix values
-A Mix Vendor row is considered to exist only if:
-A distinct second row is visible in the mix table with its own Qty cell, OR
-Vendor-specific mix text appears on a clearly separate second mix row within the table grid (i.e., aligned under Qty / Cust Descr / Description / Code / Slump).
-Wrapped text does not constitute a second row
+An additional mix row is considered to exist only if:
+A distinct row is visible in the mix table with its own Qty cell, OR
+Mix text appears on a clearly separate row within the table grid (i.e., aligned under Qty / Cust Descr / Description / Code / Slump).
+Wrapped text does not constitute a new row
 
 If a mix row wraps onto additional lines within the same columns, concatenate those wrapped lines into the same field (preserve order and single spaces)
 If the Cust. Descr. column spans multiple lines, concatenate every line in that column into "Cust. Descr." (do not drop or move text)
@@ -120,15 +123,15 @@ Field mapping guide (use MIX ROW LINES only):
 - Code: use the first code token (e.g., RMXD...) from the line that contains it.
 - Slump: use the numeric range (e.g., 150+-30) from the same line as the code if present; otherwise use a standalone numeric range line.
 - Cust. Descr./Description: combine non-code, non-qty spec lines (e.g., lines with MPA, % or "N 20MM") into the same value for both fields.
-Vendor Mix Column Mapping Rule (MANDATORY)
-For the Vendor Mix row:
+Additional Mix Column Mapping Rule (MANDATORY)
+For any Additional Mix row:
 If the Cust. Descr. column is visually blank on the ticket, return "Cust. Descr.": null
-Do not infer or backfill Vendor Cust. Descr. from adjacent text
+Do not infer or backfill Cust. Descr. from adjacent text
 Any text appearing inline that combines a vendor identifier and temperature (e.g. 35NWIN1 WEATHERMIX 8 TO 10 DEGREES) must be placed entirely in the "Description" field
 The "Code" field must only contain the discrete numeric or alphanumeric code shown in the Code column (e.g. 909124)
 For the Customer Mix row, do not append Slump text to the "Code" value; Slump must only appear in the "Slump" field.
-Under no circumstances may Mix Vendor values be copied from Mix Customer.
-If a Mix Vendor row does not exist, returning a populated Mix Vendor object is considered an error.
+Under no circumstances may Additional mix values be copied from Mix Customer.
+If an additional mix row does not exist, returning a populated Mix Additional object is considered an error.
 STEP 6 - EXTRA CHARGES RULES (CRITICAL)
 Extract charges ONLY from the "EXTRA-CHARGES" section.
 Do NOT:

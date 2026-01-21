@@ -6,7 +6,8 @@ struct Ticket: Codable {
     let deliveryTime: String?
     let deliveryAddress: String?
     let mixCustomer: MixRow
-    let mixVendor: MixRow?
+    let mixAdditional1: MixRow?
+    let mixAdditional2: MixRow?
     let extraCharges: [ExtraCharge]
 
     enum CodingKeys: String, CodingKey {
@@ -15,7 +16,8 @@ struct Ticket: Codable {
         case deliveryTime = "Delivery Time"
         case deliveryAddress = "Delivery Address"
         case mixCustomer = "Mix Customer"
-        case mixVendor = "Mix Vendor"
+        case mixAdditional1 = "Mix Additional 1"
+        case mixAdditional2 = "Mix Additional 2"
         case extraCharges = "Extra Charges"
     }
 }

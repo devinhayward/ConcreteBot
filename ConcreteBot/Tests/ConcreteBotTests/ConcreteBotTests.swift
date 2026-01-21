@@ -15,7 +15,8 @@ import Testing
         "Code": "MX-1",
         "Slump": "5"
       },
-      "Mix Vendor": null,
+      "Mix Additional 1": null,
+      "Mix Additional 2": null,
       "Extra Charges": [
         { "Description": "ENVIRONNEMENT", "Qty": "9.00" }
       ]
@@ -24,7 +25,8 @@ import Testing
 
     let ticket = try TicketValidator.decode(json: json)
     #expect(ticket.ticketNumber == "12345")
-    #expect(ticket.mixVendor == nil)
+    #expect(ticket.mixAdditional1 == nil)
+    #expect(ticket.mixAdditional2 == nil)
     #expect(ticket.extraCharges.first?.description == "ENVIRONNEMENT")
 }
 
@@ -42,7 +44,8 @@ import Testing
         "Code": null,
         "Slump": null
       },
-      "Mix Vendor": null,
+      "Mix Additional 1": null,
+      "Mix Additional 2": null,
       "Extra Charges": []
     }
     """
@@ -66,7 +69,8 @@ import Testing
             code: "RMXD445N51N 150+-30",
             slump: "9.00 SEASONAL/MANUTE (PER M3)"
         ),
-        mixVendor: nil,
+        mixAdditional1: nil,
+        mixAdditional2: nil,
         extraCharges: [
             ExtraCharge(description: "SEASONAL/MANUTE (PER M3)", qty: "9.00"),
             ExtraCharge(description: "FLEX FUEL FEE 1-INN", qty: "9.00")
@@ -92,7 +96,8 @@ import Testing
             code: "MX-1",
             slump: "9.00"
         ),
-        mixVendor: nil,
+        mixAdditional1: nil,
+        mixAdditional2: nil,
         extraCharges: [
             ExtraCharge(description: "ENVIRONNEMENT", qty: "9.00")
         ]
@@ -104,7 +109,7 @@ import Testing
     #expect(normalized.mixCustomer.slump == nil)
 }
 
-@Test func normalizesTicketWithMixVendorRow() throws {
+@Test func normalizesTicketWithAdditionalMixRow() throws {
     let json = """
     {
       "Ticket No.": "95820135",
@@ -118,13 +123,14 @@ import Testing
         "Code": "RMXW45151NX",
         "Slump": "150+-30"
       },
-      "Mix Vendor": {
+      "Mix Additional 1": {
         "Qty": "7.00 m³",
         "Cust. Descr.": null,
         "Description": "45AWIN2 WEATHERMIX 5 TO 7 DEGREES",
         "Code": "907489",
         "Slump": null
       },
+      "Mix Additional 2": null,
       "Extra Charges": [
         { "Description": "SEASONAL/MANUTE (PER M3)", "Qty": "7.00" },
         { "Description": "SITE WASH WATER MANAGEMENT FEE", "Qty": "7.00" },
@@ -139,8 +145,47 @@ import Testing
     let ticket = try TicketValidator.decode(json: json)
     let normalized = TicketNormalizer.normalize(ticket: ticket)
 
-    #expect(normalized.mixVendor != nil)
+    #expect(normalized.mixAdditional1 != nil)
     #expect(normalized.mixCustomer.code == "RMXW45151NX")
     #expect(normalized.mixCustomer.slump == "150+-30")
-    #expect(normalized.mixVendor?.code == "907489")
+    #expect(normalized.mixAdditional1?.code == "907489")
+}
+
+@Test func decodesTicketWithSecondAdditionalRow() throws {
+    let json = """
+    {
+      "Ticket No.": "95820739",
+      "Delivery Date": "Fri, Feb 21 2025",
+      "Delivery Time": "09:07",
+      "Delivery Address": "330 Mill Road, Toronto, ON M9C 1Y8",
+      "Mix Customer": {
+        "Qty": "9.00 m³",
+        "Cust. Descr.": "WEATHERMIX 25 MPA C4 20MM HR",
+        "Description": "WEATHERMIX 25 MPA C4 20MM HR",
+        "Code": "RMXW25951NX",
+        "Slump": "150+-30"
+      },
+      "Mix Additional 1": {
+        "Qty": "9.00 m³",
+        "Cust. Descr.": null,
+        "Description": "MASTERFIBER F100 2 TO 4 DEGREES",
+        "Code": "908414",
+        "Slump": null
+      },
+      "Mix Additional 2": {
+        "Qty": "9.00 m³",
+        "Cust. Descr.": null,
+        "Description": "MICROSYNTHETIC FIBER",
+        "Code": "902210",
+        "Slump": null
+      },
+      "Extra Charges": [
+        { "Description": "SITE WASH WATER MANAGEMENT FEE", "Qty": "9.00" }
+      ]
+    }
+    """
+
+    let ticket = try TicketValidator.decode(json: json)
+    #expect(ticket.mixAdditional1?.code == "908414")
+    #expect(ticket.mixAdditional2?.code == "902210")
 }

@@ -831,16 +831,30 @@ enum Extract {
                 || digitsOnlyCode(from: candidate) != nil
             let candidateHasSlump = matches(candidate, pattern: slumpPattern)
             if candidateHasCode || candidateHasSlump {
-                continue
-            }
+                let cleaned = stripMixSpecCandidate(
+                    candidate,
+                    codePattern: codePattern,
+                    numericCodePattern: numericCodePattern,
+                    slumpPattern: slumpPattern
+                )
+                guard let cleaned = trimmedNonEmpty(cleaned) else { continue }
+                let cleanedUpper = cleaned.uppercased()
+                if rowIndex > 0, isCustomerSpecLine(cleanedUpper) {
+                    continue
+                }
+                let isSpec = isCustomerSpecLine(cleanedUpper) || containsLetters(cleaned)
+                if isSpec && seenSpec.insert(cleaned).inserted {
+                    specParts.append(cleaned)
+                }
+            } else {
+                if rowIndex > 0, isCustomerSpecLine(candidateUpper) {
+                    continue
+                }
 
-            if rowIndex > 0, isCustomerSpecLine(candidateUpper) {
-                continue
-            }
-
-            let isSpec = isCustomerSpecLine(candidateUpper) || containsLetters(candidate)
-            if isSpec && seenSpec.insert(candidate).inserted {
-                specParts.append(candidate)
+                let isSpec = isCustomerSpecLine(candidateUpper) || containsLetters(candidate)
+                if isSpec && seenSpec.insert(candidate).inserted {
+                    specParts.append(candidate)
+                }
             }
         }
 
@@ -1237,6 +1251,52 @@ enum Extract {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    private static func stripMixSpecCandidate(
+        _ value: String,
+        codePattern: String,
+        numericCodePattern: String,
+        slumpPattern: String
+    ) -> String {
+        var cleaned = replacePattern(in: value, pattern: slumpPattern, with: " ")
+        let tokens = cleaned.split(whereSeparator: { $0.isWhitespace })
+        var kept: [Substring] = []
+
+        for token in tokens {
+            let rawToken = String(token)
+            let trimmed = rawToken.trimmingCharacters(in: .punctuationCharacters)
+            guard !trimmed.isEmpty else { continue }
+            let upper = trimmed.uppercased()
+            if isCustomerMixCode(upper) {
+                continue
+            }
+            if matches(upper, pattern: codePattern),
+               !upper.contains("MPA"),
+               !upper.contains("MM") {
+                continue
+            }
+            if matches(upper, pattern: numericCodePattern) || digitsOnlyCode(from: trimmed) != nil {
+                continue
+            }
+            kept.append(token)
+        }
+
+        cleaned = kept.joined(separator: " ")
+        cleaned = cleaned.replacingOccurrences(
+            of: #"\s{2,}"#,
+            with: " ",
+            options: .regularExpression
+        )
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func replacePattern(in value: String, pattern: String, with replacement: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return value
+        }
+        let range = NSRange(value.startIndex..., in: value)
+        return regex.stringByReplacingMatches(in: value, options: [], range: range, withTemplate: replacement)
+    }
+
     private static func shouldUseHint(existing: String?, hint: String?) -> Bool {
         guard let hint = trimmedNonEmpty(hint) else { return false }
         guard let existing = trimmedNonEmpty(existing) else { return true }
@@ -1251,6 +1311,29 @@ enum Extract {
         }
         if hint.hasPrefix(existing), hint.count > existing.count + 2 {
             return true
+        }
+        let normalizedExisting = normalizeSpecLine(existing)
+        let normalizedHint = normalizeSpecLine(hint)
+        if normalizedHint == normalizedExisting {
+            return false
+        }
+        let existingTokens = normalizedExisting.split(whereSeparator: { $0.isWhitespace })
+        let hintTokens = normalizedHint.split(whereSeparator: { $0.isWhitespace })
+        if hintTokens.count > existingTokens.count, !existingTokens.isEmpty {
+            let isSubset = existingTokens.allSatisfy { existingToken in
+                hintTokens.contains { hintToken in
+                    if hintToken == existingToken {
+                        return true
+                    }
+                    if hintToken.hasPrefix(existingToken), existingToken.count >= 3 {
+                        return true
+                    }
+                    return false
+                }
+            }
+            if isSubset {
+                return true
+            }
         }
         return false
     }

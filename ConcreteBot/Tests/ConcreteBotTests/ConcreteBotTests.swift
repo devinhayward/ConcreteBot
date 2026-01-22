@@ -83,6 +83,80 @@ import Testing
     #expect(normalized.mixCustomer.slump == "150+-30")
 }
 
+@Test func normalizesDescriptionWhenItContainsCodeAndSlump() {
+    let ticket = Ticket(
+        ticketNumber: "81754967",
+        deliveryDate: "Wed, Oct 1 2025",
+        deliveryTime: "09:20",
+        deliveryAddress: "596 Lolita Gardens Mississauga, ON L5A 4N8",
+        mixCustomer: MixRow(
+            qty: "8.00 m³",
+            customerDescription: "STANDARD 45MPA N NA 20MM HR 20MM SP",
+            description: "RMXS45N51NX 150+-30",
+            code: "RMXS45N51NX",
+            slump: "150+-30"
+        ),
+        mixAdditional1: nil,
+        mixAdditional2: nil,
+        extraCharges: []
+    )
+
+    let normalized = TicketNormalizer.normalize(ticket: ticket)
+
+    #expect(normalized.mixCustomer.description == "45MPA N NA 20MM HR 20MM SP")
+    #expect(normalized.mixCustomer.code == "RMXS45N51NX")
+    #expect(normalized.mixCustomer.slump == "150+-30")
+}
+
+@Test func normalizesDeliveryAddressAndMixSpecPrefix() {
+    let ticket = Ticket(
+        ticketNumber: "81754972",
+        deliveryDate: "Wed, Oct 1 2025",
+        deliveryTime: "09:46",
+        deliveryAddress: "596 Lolita Gardens\nMississauga, ON L5A\n4N8\nPO: -",
+        mixCustomer: MixRow(
+            qty: "9.00 m³",
+            customerDescription: "STANDAR 35MPA NA 20MM HR",
+            description: "STANDAR 35MPA NA 20MM HR",
+            code: "RMXS35N51NX",
+            slump: "150+-30"
+        ),
+        mixAdditional1: nil,
+        mixAdditional2: nil,
+        extraCharges: []
+    )
+
+    let normalized = TicketNormalizer.normalize(ticket: ticket)
+
+    #expect(normalized.deliveryAddress == "596 Lolita Gardens Mississauga, ON L5A 4N8")
+    #expect(normalized.mixCustomer.customerDescription == "STANDARD 35MPA NA 20MM HR")
+    #expect(normalized.mixCustomer.description == "35MPA NA 20MM HR")
+}
+
+@Test func normalizesHeaderLikeDescriptionFromCustomerSpec() {
+    let ticket = Ticket(
+        ticketNumber: "81754978",
+        deliveryDate: "Wed, Oct 1 2025",
+        deliveryTime: "10:19",
+        deliveryAddress: "596 Lolita Gardens, Mississauga, ON L5A 4N8",
+        mixCustomer: MixRow(
+            qty: "9.00 m³",
+            customerDescription: "STANDARD 35MPA NA 20MM HR",
+            description: "DESCRIPTION CODE",
+            code: "RMXS35N51NX",
+            slump: "150+-30"
+        ),
+        mixAdditional1: nil,
+        mixAdditional2: nil,
+        extraCharges: []
+    )
+
+    let normalized = TicketNormalizer.normalize(ticket: ticket)
+
+    #expect(normalized.mixCustomer.customerDescription == "STANDARD 35MPA NA 20MM HR")
+    #expect(normalized.mixCustomer.description == "35MPA NA 20MM HR")
+}
+
 @Test func normalizesSlumpWhenItMatchesExtraChargeQty() {
     let ticket = Ticket(
         ticketNumber: "12345",

@@ -88,6 +88,7 @@ enum TicketNormalizer {
         let mixQtyNumeric = numericPrefix(in: mixRow.qty)
         var code = mixRow.code?.trimmedNonEmpty
         var slump = mixRow.slump?.trimmedNonEmpty
+        let rawDescription = mixRow.description?.trimmedNonEmpty
         let customerDescription = normalizeMixSpec(mixRow.customerDescription)
         var description = mixRow.description?.trimmedNonEmpty
         let slumpLooksLikeExtraCharge = isExtraChargeNoise(
@@ -131,9 +132,19 @@ enum TicketNormalizer {
         description = normalizeMixSpec(description)
         description = normalizeDescriptionFromHeader(
             description,
-            customerDescription: customerDescription
+            customerDescription: customerDescription,
+            rawDescription: rawDescription
         )
-        description = stripStandardFromDescription(description, customerDescription: customerDescription)
+        description = stripStandardFromDescription(
+            description,
+            customerDescription: customerDescription,
+            rawDescription: rawDescription
+        )
+        description = ensureStandardInDescription(
+            description,
+            customerDescription: customerDescription,
+            rawDescription: rawDescription
+        )
 
         return MixRow(
             qty: mixRow.qty,
@@ -265,6 +276,7 @@ enum TicketNormalizer {
         guard let value else { return nil }
         var normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
         normalized = expandStandarPrefix(normalized)
+        normalized = reorderStandardSpec(normalized)
         normalized = normalized.replacingOccurrences(
             of: #"\s{2,}"#,
             with: " ",
@@ -273,12 +285,88 @@ enum TicketNormalizer {
         return normalized.trimmedNonEmpty
     }
 
+    private static func reorderStandardSpec(_ value: String) -> String {
+        let tokens = value.split(whereSeparator: { $0.isWhitespace })
+        guard !tokens.isEmpty else { return value }
+        let normalizedTokens = tokens.map { normalizeSpecToken(String($0)) }
+        guard let standardIndex = normalizedTokens.firstIndex(of: "STANDARD") else { return value }
+        guard let mpaIndex = normalizedTokens.firstIndex(where: { $0.contains("MPA") }) else { return value }
+        if standardIndex == 0, mpaIndex == 1 {
+            return value
+        }
+
+        var afterSet = Set<String>()
+        if standardIndex + 1 < normalizedTokens.count {
+            for index in (standardIndex + 1)..<normalizedTokens.count {
+                let token = normalizedTokens[index]
+                if token == "STANDARD" || token.contains("MPA") {
+                    continue
+                }
+                afterSet.insert(token)
+            }
+        }
+
+        var reordered: [Substring] = []
+        reordered.append(tokens[standardIndex])
+        reordered.append(tokens[mpaIndex])
+
+        for (index, token) in tokens.enumerated() {
+            if index == standardIndex || index == mpaIndex {
+                continue
+            }
+            let tokenKey = normalizedTokens[index]
+            if index < standardIndex, afterSet.contains(tokenKey) {
+                continue
+            }
+            reordered.append(token)
+        }
+
+        return reordered.joined(separator: " ")
+    }
+
+    private static func normalizeSpecToken(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "%+-/"))
+        let trimmed = value.trimmingCharacters(in: allowed.inverted)
+        return trimmed.uppercased()
+    }
+
+    private static func normalizeSpecLine(_ line: String) -> String {
+        let upper = line.uppercased()
+        let components = upper.split(whereSeparator: { $0.isWhitespace })
+        let collapsed = components.joined(separator: " ")
+        return normalizeSpecTokens(collapsed)
+    }
+
+    private static func normalizeSpecTokens(_ value: String) -> String {
+        var normalized = value
+        let patterns: [(String, String)] = [
+            (#"(\d+)\s*MPA"#, "$1MPA"),
+            (#"(\d+)\s*MM"#, "$1MM"),
+            (#"\bC\s*(\d+)\b"#, "C$1")
+        ]
+        for (pattern, replacement) in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
+                let range = NSRange(normalized.startIndex..., in: normalized)
+                normalized = regex.stringByReplacingMatches(
+                    in: normalized,
+                    options: [],
+                    range: range,
+                    withTemplate: replacement
+                )
+            }
+        }
+        return normalized
+    }
+
     private static func stripStandardFromDescription(
         _ description: String?,
-        customerDescription: String?
+        customerDescription: String?,
+        rawDescription: String?
     ) -> String? {
         guard let description else { return nil }
         guard let customerDescription else { return description }
+        guard let rawDescription = rawDescription?.trimmedNonEmpty else { return description }
+        guard shouldRemoveStandardFromDescription(rawDescription) else { return description }
         let customerUpper = customerDescription.uppercased()
         guard customerUpper.hasPrefix("STANDARD ") else { return description }
         let descriptionUpper = description.uppercased()
@@ -293,18 +381,86 @@ enum TicketNormalizer {
         return stripped.trimmingCharacters(in: .whitespacesAndNewlines).trimmedNonEmpty
     }
 
+    private static func ensureStandardInDescription(
+        _ description: String?,
+        customerDescription: String?,
+        rawDescription: String?
+    ) -> String? {
+        guard let description else { return nil }
+        guard let customerDescription else { return description }
+        guard !hasStandardToken(description) else { return description }
+        guard customerDescription.uppercased().hasPrefix("STANDARD ") else { return description }
+        if let rawDescription = rawDescription?.trimmedNonEmpty {
+            guard !hasTruncatedStandardPrefix(rawDescription) else { return description }
+            guard !isHeaderLikeDescription(rawDescription) else { return description }
+            guard !rawDescriptionHasMixCode(rawDescription) else { return description }
+            guard !rawDescriptionHasSlump(rawDescription) else { return description }
+        }
+        let normalizedCustomer = normalizedSpecWithoutStandard(customerDescription)
+        let normalizedDescription = normalizeSpecLine(description)
+        guard normalizedCustomer == normalizedDescription else { return description }
+        return customerDescription
+    }
+
     private static func normalizeDescriptionFromHeader(
         _ description: String?,
-        customerDescription: String?
+        customerDescription: String?,
+        rawDescription: String?
     ) -> String? {
         guard let description else { return nil }
         guard isHeaderLikeDescription(description) else { return description }
         guard let customerDescription else { return description }
         if let stripped = stripStandardFromDescription(customerDescription,
-                                                       customerDescription: customerDescription) {
+                                                       customerDescription: customerDescription,
+                                                       rawDescription: rawDescription) {
             return stripped
         }
         return customerDescription
+    }
+
+    private static func hasStandardToken(_ value: String) -> Bool {
+        return value.range(of: #"\bSTANDAR[D]?\b"#,
+                           options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    private static func hasTruncatedStandardPrefix(_ value: String) -> Bool {
+        return value.range(of: #"^\s*STANDAR\b"#,
+                           options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    private static func normalizedSpecWithoutStandard(_ value: String) -> String {
+        let normalized = normalizeSpecLine(value)
+        let tokens = normalized.split(whereSeparator: { $0.isWhitespace })
+        guard let first = tokens.first, first == "STANDARD" else {
+            return normalized
+        }
+        return tokens.dropFirst().joined(separator: " ")
+    }
+
+    private static func shouldRemoveStandardFromDescription(_ rawDescription: String) -> Bool {
+        if hasTruncatedStandardPrefix(rawDescription) {
+            return true
+        }
+        if hasStandardToken(rawDescription) {
+            return false
+        }
+        if isHeaderLikeDescription(rawDescription) {
+            return true
+        }
+        if rawDescriptionHasMixCode(rawDescription) || rawDescriptionHasSlump(rawDescription) {
+            return true
+        }
+        return false
+    }
+
+    private static func rawDescriptionHasMixCode(_ value: String) -> Bool {
+        return value.range(of: #"\bRMX[A-Z0-9]+\b"#,
+                           options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    private static func rawDescriptionHasSlump(_ value: String) -> Bool {
+        return value.range(of: #"\b\d+(?:\.\d+)?\s*\+\-\s*\d+(?:\.\d+)?\b"#,
+                           options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     private static func isHeaderLikeDescription(_ value: String) -> Bool {

@@ -7,6 +7,7 @@ enum ExtractError: Error, CustomStringConvertible {
     case invalidResponse(String)
     case missingResponseInput
     case invalidPageRange(String)
+    case autoPageSelectionFailed(String)
     case pdfLoadFailed(String)
     case pageOutOfRange(Int, Int)
     case emptyPageText(Int)
@@ -23,6 +24,8 @@ enum ExtractError: Error, CustomStringConvertible {
             return "No response input provided. Use --response-file or --response-stdin."
         case .invalidPageRange(let detail):
             return "Invalid page range: \(detail)"
+        case .autoPageSelectionFailed(let detail):
+            return "Auto page selection failed: \(detail)"
         case .pdfLoadFailed(let detail):
             return "Failed to load PDF: \(detail)"
         case .pageOutOfRange(let page, let total):
@@ -67,14 +70,15 @@ enum Extract {
             return
         }
 
+        let pdfPath = expandingTilde(in: options.pdfPath)
+        guard let document = PDFDocument(url: URL(fileURLWithPath: pdfPath)) else {
+            throw ExtractError.pdfLoadFailed(pdfPath)
+        }
         let pageNumbers: [Int]
         do {
-            pageNumbers = try PageRange.parse(options.pages)
+            pageNumbers = try resolvePageNumbers(pages: options.pages, document: document, pdfPath: pdfPath)
         } catch let error as PageRangeError {
             throw ExtractError.invalidPageRange(error.description)
-        }
-        guard let document = PDFDocument(url: URL(fileURLWithPath: options.pdfPath)) else {
-            throw ExtractError.pdfLoadFailed(options.pdfPath)
         }
 
         if options.printPrompt {
@@ -96,7 +100,7 @@ enum Extract {
                 let prompt = renderPrompt(
                     template: promptTemplate,
                     compactTemplate: compactPromptTemplate,
-                    pdfPath: options.pdfPath,
+                    pdfPath: pdfPath,
                     page: pageNumber,
                     pageText: condensedText,
                     mixText: mixText,
@@ -134,7 +138,7 @@ enum Extract {
             let prompt = renderPrompt(
                 template: promptTemplate,
                 compactTemplate: compactPromptTemplate,
-                pdfPath: options.pdfPath,
+                pdfPath: pdfPath,
                 page: pageNumber,
                 pageText: condensedText,
                 mixText: mixText,
@@ -583,6 +587,99 @@ enum Extract {
         return results
     }
 
+    private static func resolvePageNumbers(
+        pages: String,
+        document: PDFDocument,
+        pdfPath: String
+    ) throws -> [Int] {
+        let trimmed = pages.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed.lowercased()
+        if normalized == "auto" {
+            return try autoSelectPages(document: document, pdfPath: pdfPath)
+        }
+        return try PageRange.parse(trimmed)
+    }
+
+    private static func autoSelectPages(
+        document: PDFDocument,
+        pdfPath: String
+    ) throws -> [Int] {
+        let pageCount = document.pageCount
+        var scored: [(page: Int, score: Int)] = []
+        var pagesWithText: [Int] = []
+
+        for index in 0..<pageCount {
+            guard let page = document.page(at: index) else { continue }
+            let text = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !text.isEmpty else { continue }
+            let pageNumber = index + 1
+            pagesWithText.append(pageNumber)
+            let score = scorePageText(text)
+            if score > 0 {
+                scored.append((page: pageNumber, score: score))
+            }
+        }
+
+        guard !pagesWithText.isEmpty else {
+            throw ExtractError.autoPageSelectionFailed("No text found in PDF: \(pdfPath)")
+        }
+
+        guard let maxScore = scored.map({ $0.score }).max() else {
+            return pagesWithText
+        }
+
+        let threshold = max(3, maxScore - 2)
+        let selected = scored.filter { $0.score >= threshold }.map { $0.page }
+        return selected.isEmpty ? pagesWithText : selected
+    }
+
+    private static func scorePageText(_ text: String) -> Int {
+        let upper = text.uppercased()
+        let ticketMarkers = [
+            "TICKET NO",
+            "TICKET NUMBER",
+            "TICKET #"
+        ]
+        let deliveryMarkers = [
+            "DELIVERY DATE",
+            "DELIVERY TIME",
+            "DELIVERY ADDR",
+            "DELIVERY ADDRESS",
+            "JOBSITE",
+            "CUSTOMER",
+            "ORDER NO",
+            "ORDER #"
+        ]
+        let mixMarkers = [
+            "MIX",
+            "SLUMP",
+            "MPA",
+            "EXTRA CHARGES",
+            "PLANT NO"
+        ]
+
+        var score = 0
+        if containsAny(upper, markers: ticketMarkers) {
+            score += 4
+        }
+        for marker in deliveryMarkers where upper.contains(marker) {
+            score += 1
+        }
+        for marker in mixMarkers where upper.contains(marker) {
+            score += 1
+        }
+        return score
+    }
+
+    private static func containsAny(_ text: String, markers: [String]) -> Bool {
+        for marker in markers {
+            if text.contains(marker) {
+                return true
+            }
+        }
+        return false
+    }
+
     private static func extractPageText(document: PDFDocument, pageNumber: Int) throws -> String {
         let pageCount = document.pageCount
         guard pageNumber >= 1 && pageNumber <= pageCount else {
@@ -598,7 +695,7 @@ enum Extract {
         return text
     }
 
-    private static func expandingTilde(in path: String) -> String {
+    static func expandingTilde(in path: String) -> String {
         if path.hasPrefix("~") {
             return (path as NSString).expandingTildeInPath
         }

@@ -277,6 +277,7 @@ enum TicketNormalizer {
         var normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
         normalized = expandStandarPrefix(normalized)
         normalized = reorderStandardSpec(normalized)
+        normalized = dedupeSpecTokenRuns(normalized)
         normalized = normalized.replacingOccurrences(
             of: #"\s{2,}"#,
             with: " ",
@@ -328,6 +329,50 @@ enum TicketNormalizer {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "%+-/"))
         let trimmed = value.trimmingCharacters(in: allowed.inverted)
         return trimmed.uppercased()
+    }
+
+    private static func dedupeSpecTokenRuns(_ value: String) -> String {
+        let tokens = value.split(whereSeparator: { $0.isWhitespace })
+        guard tokens.count > 2 else { return value }
+        var result: [Substring] = []
+        result.reserveCapacity(tokens.count)
+
+        for token in tokens {
+            let key = specTokenKey(token)
+            if let last = result.last,
+               key == specTokenKey(last),
+               shouldDropRepeatedSpecToken(key) {
+                continue
+            }
+            if result.count >= 2 {
+                let prev2 = result[result.count - 2]
+                let middle = result[result.count - 1]
+                if key == specTokenKey(prev2),
+                   shouldDropSeparatedRepeat(key: key, middle: middle) {
+                    continue
+                }
+            }
+            result.append(token)
+        }
+
+        return result.joined(separator: " ")
+    }
+
+    private static func specTokenKey(_ token: Substring) -> String {
+        let scalars = token.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
+        return String(String.UnicodeScalarView(scalars)).uppercased()
+    }
+
+    private static func shouldDropRepeatedSpecToken(_ key: String) -> Bool {
+        guard key.count >= 3 else { return false }
+        return key.allSatisfy { $0.isLetter }
+    }
+
+    private static func shouldDropSeparatedRepeat(key: String, middle: Substring) -> Bool {
+        guard shouldDropRepeatedSpecToken(key) else { return false }
+        let middleKey = specTokenKey(middle)
+        guard middleKey.count <= 2, !middleKey.isEmpty else { return false }
+        return middleKey.allSatisfy { $0.isLetter }
     }
 
     private static func normalizeSpecLine(_ line: String) -> String {

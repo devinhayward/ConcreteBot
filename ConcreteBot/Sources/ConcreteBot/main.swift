@@ -30,6 +30,7 @@ struct CLIOptions {
     let printPrompt: Bool
     let responseFile: String?
     let responseStdin: Bool
+    let responseOut: String?
 }
 
 struct BatchOptions {
@@ -49,7 +50,7 @@ func printUsage() {
     ConcreteBot
 
     Usage:
-      concretebot extract --pdf <path> --pages <range|auto> [--out <dir>] [--print-prompt] [--response-file <path>] [--response-stdin]
+      concretebot extract --pdf <path> --pages <range|auto> [--out <dir>] [--print-prompt] [--response-file <path>] [--response-stdin] [--response-out <path>]
       concretebot batch --csv <path> [--pages <range|auto>] [--out <dir>] [--print-prompt]
 
     Options:
@@ -60,6 +61,7 @@ func printUsage() {
       --print-prompt   Print the rendered prompt and exit.
       --response-file  Path to a file containing model JSON response.
       --response-stdin Read model JSON response from stdin.
+      --response-out   Write raw model response to a file (extract only).
     """
     print(usage)
 }
@@ -93,6 +95,7 @@ private func parseExtractArgs(_ args: [String]) throws -> CLIOptions {
     var printPrompt = false
     var responseFile: String?
     var responseStdin = false
+    var responseOut: String?
 
     var index = 0
     while index < args.count {
@@ -120,6 +123,10 @@ private func parseExtractArgs(_ args: [String]) throws -> CLIOptions {
         case "--response-stdin":
             responseStdin = true
             index += 1
+        case "--response-out":
+            guard index + 1 < args.count else { throw CLIError.missingArgument("--response-out") }
+            responseOut = args[index + 1]
+            index += 2
         case "--help", "-h":
             printUsage()
             exit(0)
@@ -137,7 +144,8 @@ private func parseExtractArgs(_ args: [String]) throws -> CLIOptions {
         outputDir: outputDir,
         printPrompt: printPrompt,
         responseFile: responseFile,
-        responseStdin: responseStdin
+        responseStdin: responseStdin,
+        responseOut: responseOut
     )
 }
 
@@ -170,6 +178,8 @@ private func parseBatchArgs(_ args: [String]) throws -> BatchOptions {
             throw CLIError.invalidArgument("--response-file is not supported in batch mode.")
         case "--response-stdin":
             throw CLIError.invalidArgument("--response-stdin is not supported in batch mode.")
+        case "--response-out":
+            throw CLIError.invalidArgument("--response-out is not supported in batch mode.")
         case "--help", "-h":
             printUsage()
             exit(0)

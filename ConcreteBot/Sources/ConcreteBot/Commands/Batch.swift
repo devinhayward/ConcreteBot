@@ -39,7 +39,8 @@ enum Batch {
                 outputDir: options.outputDir,
                 printPrompt: options.printPrompt,
                 responseFile: nil,
-                responseStdin: false
+                responseStdin: false,
+                responseOut: nil
             )
             try Extract.run(options: extractOptions)
         }

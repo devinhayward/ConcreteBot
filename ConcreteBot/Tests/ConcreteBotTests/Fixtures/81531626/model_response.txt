@@ -1,0 +1,53 @@
+```json
+{
+  "Ticket No.": "81531626",
+  "Delivery Date": "Wed, Nov 5 2025",
+  "Delivery Time": "09:49",
+  "Delivery Address": "596 Lolita Gardens Mississauga, ON L5A 4N8",
+
+  "Mix Customer": {
+    "Qty": "4.00 m³",
+    "Cust. Descr.": "WEATHE R ECO COR.INH 35MPA C1 20M HR",
+    "Description": "4.00 m³ WEATHE R ECO 35MPA C1 20M HR",
+    "Code": "RMEW35151NA",
+    "Slump": "150+-30"
+  },
+
+  "Mix Additional 1": {
+    "Qty": "4.00 m³",
+    "Cust. Descr.": "CORROSION INHIBITOR (10L/M3) B",
+    "Description": "4.00 m³ CORROSION INHIBITOR (10L/M3) B",
+    "Code": "907878",
+    "Slump": ""
+  },
+
+  "Mix Additional 2": null,
+
+  "Extra Charges": [
+    {
+      "Description": "SITE WASH WATER MANAGEMENT FEE",
+      "Qty": "4.00"
+    },
+    {
+      "Description": "TOARC FEE (M3)",
+      "Qty": "4.00"
+    },
+    {
+      "Description": "ENVIRONMENTAL/ENVIRONNEMENT",
+      "Qty": "4.00"
+    },
+    {
+      "Description": "SEASONAL/MANUTE (PER M3)",
+      "Qty": "4.00"
+    },
+    {
+      "Description": "FLEX FUEL FEE 1-INN",
+      "Qty": "4.00"
+    },
+    {
+      "Description": "SUPERPLASTICIZER EXT",
+      "Qty": "4.00"
+    }
+  ]
+}
+```

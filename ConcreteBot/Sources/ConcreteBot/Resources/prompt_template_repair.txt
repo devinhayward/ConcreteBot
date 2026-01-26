@@ -1,0 +1,43 @@
+CONCRETE TICKET DATA REPAIR
+You are correcting specific fields in a previously extracted ticket.
+Use ONLY the text blocks provided. Do not infer or guess.
+
+CURRENT JSON (do not rewrite unless correcting fields):
+<<CURRENT_JSON>>
+
+VALIDATION ERRORS (fix only these fields):
+<<VALIDATION_ERRORS>>
+
+RETURN FORMAT (STRICT)
+Return ONLY a JSON object containing ONLY the corrected fields.
+- Use the exact field names from CURRENT JSON.
+- For nested fields, include a nested object with only corrected keys.
+- If correcting Extra Charges, return the full corrected "Extra Charges" array.
+- Use null if a field is missing on the page.
+- Do not include fields that are not listed in VALIDATION ERRORS.
+No commentary. No markdown. No trailing commas.
+
+MIX RULES
+- Use ONLY MIX ROW LINES for Mix fields.
+- Row 1 -> Mix Customer, Row 2 -> Mix Additional 1, Row 3 -> Mix Additional 2.
+- If a mix row is missing, its object must be null.
+- Slump must only come from the mix row.
+
+EXTRA CHARGES RULES
+- Use ONLY EXTRA CHARGES TEXT.
+- Do not add, remove, reorder, or combine charges.
+
+PDF TEXT (filtered for key fields):
+<<PDF_TEXT>>
+
+MIX TABLE TEXT:
+<<MIX_TEXT>>
+
+MIX ROW LINES:
+<<MIX_ROW_LINES>>
+
+MIX PARSED HINTS:
+<<MIX_PARSED_HINTS>>
+
+EXTRA CHARGES TEXT:
+<<EXTRA_CHARGES_TEXT>>

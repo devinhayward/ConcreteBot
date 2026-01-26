@@ -27,7 +27,10 @@ let package = Package(
         ),
         .testTarget(
             name: "ConcreteBotTests",
-            dependencies: ["ConcreteBot"]
+            dependencies: ["ConcreteBot"],
+            resources: [
+                .process("Tests/ConcreteBotTests/Fixtures")
+            ]
         ),
     ]
 )

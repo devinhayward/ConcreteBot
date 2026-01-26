@@ -61,11 +61,12 @@ enum Extract {
                 throw ExtractError.noJSONFound
             }
 
+            let nonCriticalPaths: Set<String> = ["Delivery Date", "Delivery Time"]
             var tickets: [Ticket] = []
             for json in jsonObjects {
                 let ticket = try TicketValidator.decode(json: json)
                 let normalizedTicket = TicketNormalizer.normalize(ticket: ticket)
-                try TicketValidator.validate(ticket: normalizedTicket)
+                try TicketValidator.validate(ticket: normalizedTicket, ignoringPaths: nonCriticalPaths)
                 tickets.append(normalizedTicket)
             }
 
@@ -118,6 +119,7 @@ enum Extract {
             return
         }
 
+        let nonCriticalPaths: Set<String> = ["Delivery Date", "Delivery Time"]
         var tickets: [Ticket] = []
         let totalPages = pageNumbers.count
         var processedPages = 0
@@ -170,8 +172,11 @@ enum Extract {
                 let mergedTicket = mergeExtraCharges(from: extraChargesText, ticket: hintedTicket)
                 let normalizedTicket = TicketNormalizer.normalize(ticket: mergedTicket)
                 let issues = TicketValidator.issues(ticket: normalizedTicket)
-                if issues.isEmpty {
-                    try TicketValidator.validate(ticket: normalizedTicket)
+                let criticalIssues = issues.filter { issue in
+                    !nonCriticalPaths.contains(issue.path)
+                }
+                if criticalIssues.isEmpty {
+                    try TicketValidator.validate(ticket: normalizedTicket, ignoringPaths: nonCriticalPaths)
                     tickets.append(normalizedTicket)
                     continue
                 }
@@ -186,13 +191,13 @@ enum Extract {
                     mixParsedHints: mixParsedHints,
                     extraChargesText: extraChargesText,
                     baseTicket: mergedTicket,
-                    issues: issues
+                    issues: criticalIssues
                 ) {
                     let normalizedRepaired = TicketNormalizer.normalize(ticket: repairedTicket)
-                    try TicketValidator.validate(ticket: normalizedRepaired)
+                    try TicketValidator.validate(ticket: normalizedRepaired, ignoringPaths: nonCriticalPaths)
                     tickets.append(normalizedRepaired)
                 } else {
-                    throw TicketValidationError.invalidFields(issues)
+                    throw TicketValidationError.invalidFields(criticalIssues)
                 }
             }
             processedPages += 1
@@ -2025,4 +2030,5 @@ enum Extract {
         let data = response.data(using: .utf8) ?? Data()
         try data.write(to: url, options: Data.WritingOptions.atomic)
     }
+
 }

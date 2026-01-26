@@ -28,8 +28,10 @@ enum TicketValidator {
         }
     }
 
-    static func validate(ticket: Ticket) throws {
-        let issues = issues(ticket: ticket)
+    static func validate(ticket: Ticket, ignoringPaths: Set<String> = []) throws {
+        let issues = issues(ticket: ticket).filter { issue in
+            !ignoringPaths.contains(issue.path)
+        }
         if !issues.isEmpty {
             throw TicketValidationError.invalidFields(issues)
         }
@@ -110,9 +112,13 @@ enum TicketValidator {
     private static func isValidDate(_ value: String) -> Bool {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return true }
+        let normalized = normalizeDateString(trimmed)
+        let candidates = [trimmed, normalized].filter { !$0.isEmpty }
         let formatters = dateFormatters()
-        return formatters.contains { formatter in
-            formatter.date(from: trimmed) != nil
+        return candidates.contains { candidate in
+            formatters.contains { formatter in
+                formatter.date(from: candidate) != nil
+            }
         }
     }
 
@@ -120,8 +126,14 @@ enum TicketValidator {
         let formats = [
             "EEE, MMM d yyyy",
             "EEE, MMM dd yyyy",
+            "EEE, MMM d, yyyy",
+            "EEE, MMM dd, yyyy",
+            "EEE MMM d yyyy",
+            "EEE MMM dd yyyy",
             "MMM d yyyy",
             "MMM dd yyyy",
+            "MMM d, yyyy",
+            "MMM dd, yyyy",
             "MM/dd/yyyy",
             "yyyy-MM-dd"
         ]
@@ -132,6 +144,21 @@ enum TicketValidator {
             formatter.timeZone = TimeZone(secondsFromGMT: 0)
             return formatter
         }
+    }
+
+    private static func normalizeDateString(_ value: String) -> String {
+        var normalized = value
+        normalized = normalized.replacingOccurrences(
+            of: #"\s{2,}"#,
+            with: " ",
+            options: .regularExpression
+        )
+        normalized = normalized.replacingOccurrences(
+            of: #"(\b\d{1,2}),"#,
+            with: "$1",
+            options: .regularExpression
+        )
+        return normalized.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func isValidTime(_ value: String) -> Bool {

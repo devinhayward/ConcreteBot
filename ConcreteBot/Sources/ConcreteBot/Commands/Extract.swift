@@ -40,6 +40,13 @@ enum ExtractError: Error, CustomStringConvertible {
 }
 
 enum Extract {
+    struct ExtractionOverrides {
+        let mixText: String?
+        let mixRowLines: String?
+        let mixParsedHints: String?
+        let extraChargesText: String?
+    }
+
     static func run(options: CLIOptions) throws {
         let promptTemplate = try loadPromptTemplate(named: "prompt_template")
         let compactPromptTemplate = try loadPromptTemplate(named: "prompt_template_compact")
@@ -215,8 +222,65 @@ enum Extract {
         pageText: String,
         pdfPath: String = "fixture.pdf",
         page: Int = 1,
-        modelResponse: String
+        modelResponse: String,
+        overrides: ExtractionOverrides? = nil
     ) throws -> [Ticket] {
+        let normalizedPageText = normalizePageText(pageText)
+        var mixText = trimmedNonEmpty(overrides?.mixText)
+        var mixRowLines = trimmedNonEmpty(overrides?.mixRowLines)
+        var mixParsedHints = trimmedNonEmpty(overrides?.mixParsedHints)
+        var extraChargesText = trimmedNonEmpty(overrides?.extraChargesText)
+
+        if mixText == nil {
+            let extracted = extractSection(
+                text: normalizedPageText,
+                startMarkers: ["MIX"],
+                endMarkers: ["INSTRUCTIONS"]
+            )
+            mixText = trimmedNonEmpty(extracted)
+        }
+        if mixRowLines == nil {
+            mixRowLines = trimmedNonEmpty(extractMixRowLines(mixText ?? ""))
+        }
+        if mixParsedHints == nil {
+            mixParsedHints = trimmedNonEmpty(buildMixParsedHints(from: mixRowLines ?? ""))
+        }
+        if extraChargesText == nil {
+            let extracted = extractSection(
+                text: normalizedPageText,
+                startMarkers: ["EXTRA CHARGES"],
+                endMarkers: ["WATER CONTENT", "MATERIAL REQUIRED"]
+            )
+            extraChargesText = trimmedNonEmpty(extracted)
+        }
+
+        let resolvedOverrides = ExtractionOverrides(
+            mixText: mixText,
+            mixRowLines: mixRowLines,
+            mixParsedHints: mixParsedHints,
+            extraChargesText: extraChargesText
+        )
+        let mixParsedHintsValue = resolvedOverrides.mixParsedHints ?? ""
+        let extraChargesTextValue = resolvedOverrides.extraChargesText ?? ""
+
+        let jsonObjects = splitJSONObjects(from: modelResponse)
+        guard !jsonObjects.isEmpty else {
+            throw ExtractError.noJSONFound
+        }
+
+        var tickets: [Ticket] = []
+        for json in jsonObjects {
+            let ticket = try TicketValidator.decode(json: json)
+            let hintedTicket = applyMixParsedHints(ticket: ticket, mixParsedHints: mixParsedHintsValue)
+            let mergedTicket = mergeExtraCharges(from: extraChargesTextValue, ticket: hintedTicket)
+            let normalizedTicket = TicketNormalizer.normalize(ticket: mergedTicket)
+            try TicketValidator.validate(ticket: normalizedTicket)
+            tickets.append(normalizedTicket)
+        }
+        return tickets
+    }
+
+    static func buildOverrides(from pageText: String) -> ExtractionOverrides {
         let normalizedPageText = normalizePageText(pageText)
         let mixText = extractSection(
             text: normalizedPageText,
@@ -231,21 +295,12 @@ enum Extract {
             endMarkers: ["WATER CONTENT", "MATERIAL REQUIRED"]
         )
 
-        let jsonObjects = splitJSONObjects(from: modelResponse)
-        guard !jsonObjects.isEmpty else {
-            throw ExtractError.noJSONFound
-        }
-
-        var tickets: [Ticket] = []
-        for json in jsonObjects {
-            let ticket = try TicketValidator.decode(json: json)
-            let hintedTicket = applyMixParsedHints(ticket: ticket, mixParsedHints: mixParsedHints)
-            let mergedTicket = mergeExtraCharges(from: extraChargesText, ticket: hintedTicket)
-            let normalizedTicket = TicketNormalizer.normalize(ticket: mergedTicket)
-            try TicketValidator.validate(ticket: normalizedTicket)
-            tickets.append(normalizedTicket)
-        }
-        return tickets
+        return ExtractionOverrides(
+            mixText: mixText,
+            mixRowLines: mixRowLines,
+            mixParsedHints: mixParsedHints,
+            extraChargesText: extraChargesText
+        )
     }
 
     private static func loadPromptTemplate(named name: String) throws -> String {
@@ -594,14 +649,14 @@ enum Extract {
         var seenKeys = Set<String>()
         var merged: [ExtraCharge] = []
 
-        for charge in parsedCharges {
+        for charge in existingCharges {
             let key = extraChargeKey(charge)
             if seenKeys.insert(key).inserted {
                 merged.append(charge)
             }
         }
 
-        for charge in existingCharges {
+        for charge in parsedCharges {
             let key = extraChargeKey(charge)
             if seenKeys.insert(key).inserted {
                 merged.append(charge)
@@ -1126,9 +1181,19 @@ enum Extract {
 
     private static func buildMixParsedHints(from mixRowLines: String) -> String {
         let rawLines = mixRowLines.split(separator: "\n", omittingEmptySubsequences: true)
-        let lines = rawLines
+        let cleaned = rawLines
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+            .filter { !isMixNoiseLine($0) }
+        var seen = Set<String>()
+        let lines = cleaned.filter { line in
+            let key = normalizeMixLineKey(line)
+            if seen.contains(key) {
+                return false
+            }
+            seen.insert(key)
+            return true
+        }
         guard !lines.isEmpty else {
             return formatMixParsedHints([MixParsedHintRow(qty: "", code: "", slump: "", spec: "")])
         }
@@ -1159,6 +1224,12 @@ enum Extract {
             codePattern: codePattern,
             slumpPattern: slumpPattern,
             cubeSymbol: cubeSymbol
+        )
+        supplementRowSpecs(
+            &hints,
+            allLines: lines,
+            codePattern: codePattern,
+            slumpPattern: slumpPattern
         )
         return formatMixParsedHints(hints)
     }
@@ -1374,7 +1445,8 @@ enum Extract {
             let hintQty = trimmedNonEmpty(customer.qty)
             let hintCode = trimmedNonEmpty(customer.code)
             let hintSlump = trimmedNonEmpty(customer.slump)
-            if shouldUseHint(existing: mixCustomer.customerDescription, hint: hintSpec) {
+            if shouldUseHint(existing: mixCustomer.customerDescription, hint: hintSpec),
+               !shouldPreserveCustomerWeather(existing: mixCustomer.customerDescription, hint: hintSpec) {
                 mixCustomer = MixRow(
                     qty: mixCustomer.qty,
                     customerDescription: hintSpec,
@@ -1640,7 +1712,8 @@ enum Extract {
         guard let value else { return nil }
         let stripped = stripLeadingQty(value)
         let cleaned = removeIgnoredMixPrefixes(from: stripped)
-        return trimmedNonEmpty(cleaned)
+        let merged = mergeSplitWordTokens(cleaned)
+        return trimmedNonEmpty(merged)
     }
 
     private static func stripLeadingQty(_ value: String) -> String {
@@ -1763,6 +1836,19 @@ enum Extract {
         return false
     }
 
+    private static func shouldPreserveCustomerWeather(existing: String?, hint: String?) -> Bool {
+        guard let existing = trimmedNonEmpty(existing) else { return false }
+        guard let hint = trimmedNonEmpty(hint) else { return false }
+        let normalizedExisting = mergeSplitWordTokens(existing)
+        let existingUpper = normalizedExisting.uppercased()
+        let hintUpper = hint.uppercased()
+        if existingUpper.contains("WEATHER"), !existingUpper.contains("WEATHERMIX"),
+           hintUpper.contains("WEATHERMIX") {
+            return true
+        }
+        return false
+    }
+
     private static func shouldOverrideAdditionalField(
         existing: String?,
         hint: String?,
@@ -1823,7 +1909,89 @@ enum Extract {
     }
 
     private static func isCustomerMixCode(_ value: String) -> Bool {
-        value.uppercased().hasPrefix("RMX")
+        let upper = value.uppercased()
+        return upper.hasPrefix("RM")
+    }
+
+    private static func isMixNoiseLine(_ line: String) -> Bool {
+        let upper = line.uppercased()
+        if upper.contains("NO MANUAL ADDITIONS") {
+            return true
+        }
+        if upper.hasPrefix("N/A") || upper.hasPrefix("NA -") {
+            return true
+        }
+        let dayTokens = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
+        let monthTokens = [
+            "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+            "JUL", "AUG", "SEP", "SEPT", "OCT", "NOV", "DEC"
+        ]
+        let hasDay = dayTokens.contains { upper.contains($0) }
+        let hasMonth = monthTokens.contains { upper.contains($0) }
+        let hasYear = upper.range(of: #"\b20\d{2}\b"#, options: .regularExpression) != nil
+        if hasDay && hasMonth && hasYear {
+            return true
+        }
+        return false
+    }
+
+    private static func normalizeMixLineKey(_ line: String) -> String {
+        let upper = line.uppercased()
+        let collapsed = upper.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        return collapsed
+    }
+
+    private static func supplementRowSpecs(
+        _ hints: inout [MixParsedHintRow],
+        allLines: [String],
+        codePattern: String,
+        slumpPattern: String
+    ) {
+        guard !hints.isEmpty else { return }
+        let numericCodePattern = #"\b\d{5,}\b"#
+        var candidates: [String] = []
+        for line in allLines {
+            if isIgnoredMixLine(line) {
+                continue
+            }
+            let candidate = stripLeadingQty(line)
+            let cleaned = stripMixSpecCandidate(
+                candidate,
+                codePattern: codePattern,
+                numericCodePattern: numericCodePattern,
+                slumpPattern: slumpPattern
+            )
+            guard let cleaned = trimmedNonEmpty(cleaned) else { continue }
+            guard containsLetters(cleaned) else { continue }
+            candidates.append(mergeSplitWordTokens(cleaned))
+        }
+
+        guard !candidates.isEmpty else { return }
+        let current = mergeSplitWordTokens(hints[0].spec)
+        var best = current
+        for candidate in candidates {
+            if shouldUseHint(existing: best, hint: candidate) {
+                best = candidate
+            }
+        }
+        hints[0].spec = best
+    }
+
+    private static func mergeSplitWordTokens(_ value: String) -> String {
+        let tokens = value.split(whereSeparator: { $0.isWhitespace })
+        guard tokens.count > 1 else { return value }
+        var merged: [String] = []
+        merged.reserveCapacity(tokens.count)
+        for token in tokens {
+            let str = String(token)
+            if str.count == 1, let last = merged.last, str.allSatisfy({ $0.isLetter }),
+               last.allSatisfy({ $0.isLetter }), last.count >= 3 {
+                merged[merged.count - 1] = last + str
+            } else {
+                merged.append(str)
+            }
+        }
+        return merged.joined(separator: " ")
     }
 
     private static func dedupeSpecParts(_ parts: [String]) -> [String] {

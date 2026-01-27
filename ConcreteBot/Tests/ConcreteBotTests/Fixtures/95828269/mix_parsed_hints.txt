@@ -1,0 +1,5 @@
+Row 1:
+Qty: 5.50 m3
+Code: RMXS40N51NX
+Slump: 150+-30
+Spec: STANDARD 40MPA NA NA 20MM 20MM HR

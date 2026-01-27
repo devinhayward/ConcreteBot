@@ -173,8 +173,7 @@ enum TicketNormalizer {
         }
 
         if let best, best.uppercased().contains("WEATHERMIX") {
-            if normalizedCustomer == nil || normalizedCustomer == normalizedDescription ||
-                normalizedCustomer?.uppercased().contains("WEATHERMIX") == true {
+            if normalizedCustomer == nil || normalizedCustomer == normalizedDescription {
                 let weatherVariant = replaceWeatherMix(best)
                 if weatherVariant != best {
                     normalizedCustomer = weatherVariant
@@ -197,12 +196,45 @@ enum TicketNormalizer {
 
     private static func selectBestSpec(_ first: String?, _ second: String?) -> String? {
         guard let first, let second else { return first ?? second }
+        if let preferred = preferSpecVariant(first, second) {
+            return preferred
+        }
         let scoreFirst = specScore(first)
         let scoreSecond = specScore(second)
         if scoreFirst == scoreSecond {
             return first.count >= second.count ? first : second
         }
         return scoreFirst >= scoreSecond ? first : second
+    }
+
+    private static func preferSpecVariant(_ first: String, _ second: String) -> String? {
+        let normalizedFirst = normalizeSpecLine(first)
+        let normalizedSecond = normalizeSpecLine(second)
+        if normalizedFirst == normalizedSecond {
+            return nil
+        }
+        let firstTokens = normalizedFirst.split(whereSeparator: { $0.isWhitespace })
+        let secondTokens = normalizedSecond.split(whereSeparator: { $0.isWhitespace })
+        guard firstTokens.count == secondTokens.count, !firstTokens.isEmpty else { return nil }
+        var diffIndex: Int? = nil
+        for (index, token) in firstTokens.enumerated() {
+            if token != secondTokens[index] {
+                if diffIndex != nil {
+                    return nil
+                }
+                diffIndex = index
+            }
+        }
+        guard let diffIndex else { return nil }
+        let firstToken = String(firstTokens[diffIndex])
+        let secondToken = String(secondTokens[diffIndex])
+        if firstToken == "HR" && secondToken == "SP" {
+            return first
+        }
+        if firstToken == "SP" && secondToken == "HR" {
+            return second
+        }
+        return nil
     }
 
     private static func specScore(_ value: String) -> Int {

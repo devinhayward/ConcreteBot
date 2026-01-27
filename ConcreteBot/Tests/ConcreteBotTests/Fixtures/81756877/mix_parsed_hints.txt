@@ -1,0 +1,10 @@
+Row 1:
+Qty: 9.00 m3
+Code: RMXW35N51NX
+Slump: 150+-30
+Spec: WEATHERMIX 35MPA N 20MM SP
+Row 2:
+Qty: 9.00 m3
+Code: 909130
+Slump: 
+Spec: 35NWIN2 WEATHERMIX Yes - Manual Additions 5 TO 7 DEGREES

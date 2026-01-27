@@ -175,9 +175,10 @@ enum Extract {
 
             for json in jsonObjects {
                 let ticket = try TicketValidator.decode(json: json)
-                let hintedTicket = applyMixParsedHints(ticket: ticket, mixParsedHints: mixParsedHints)
-                let mergedTicket = mergeExtraCharges(from: extraChargesText, ticket: hintedTicket)
-                let normalizedTicket = TicketNormalizer.normalize(ticket: mergedTicket)
+            let hintedTicket = applyMixParsedHints(ticket: ticket, mixParsedHints: mixParsedHints)
+            let adjustedTicket = applyMixSpecOverrides(ticket: hintedTicket, mixRowLines: mixRowLines)
+            let mergedTicket = mergeExtraCharges(from: extraChargesText, ticket: adjustedTicket)
+            let normalizedTicket = TicketNormalizer.normalize(ticket: mergedTicket)
                 let issues = TicketValidator.issues(ticket: normalizedTicket)
                 let criticalIssues = issues.filter { issue in
                     !nonCriticalPaths.contains(issue.path)
@@ -272,7 +273,8 @@ enum Extract {
         for json in jsonObjects {
             let ticket = try TicketValidator.decode(json: json)
             let hintedTicket = applyMixParsedHints(ticket: ticket, mixParsedHints: mixParsedHintsValue)
-            let mergedTicket = mergeExtraCharges(from: extraChargesTextValue, ticket: hintedTicket)
+            let adjustedTicket = applyMixSpecOverrides(ticket: hintedTicket, mixRowLines: mixRowLines)
+            let mergedTicket = mergeExtraCharges(from: extraChargesTextValue, ticket: adjustedTicket)
             let normalizedTicket = TicketNormalizer.normalize(ticket: mergedTicket)
             try TicketValidator.validate(ticket: normalizedTicket)
             tickets.append(normalizedTicket)
@@ -1228,6 +1230,7 @@ enum Extract {
         supplementRowSpecs(
             &hints,
             allLines: lines,
+            rawLines: cleaned,
             codePattern: codePattern,
             slumpPattern: slumpPattern
         )
@@ -1335,7 +1338,8 @@ enum Extract {
                 )
                 guard let cleaned = trimmedNonEmpty(cleaned) else { continue }
                 let cleanedUpper = cleaned.uppercased()
-                if rowIndex > 0, isCustomerSpecLine(cleanedUpper) {
+                if rowIndex > 0,
+                   isCustomerSpecLine(cleanedUpper) || isCustomerSpecHeaderLine(cleanedUpper) {
                     continue
                 }
                 let isSpec = isCustomerSpecLine(cleanedUpper) || containsLetters(cleaned)
@@ -1343,7 +1347,8 @@ enum Extract {
                     specParts.append(cleaned)
                 }
             } else {
-                if rowIndex > 0, isCustomerSpecLine(candidateUpper) {
+                if rowIndex > 0,
+                   isCustomerSpecLine(candidateUpper) || isCustomerSpecHeaderLine(candidateUpper) {
                     continue
                 }
 
@@ -1656,6 +1661,50 @@ enum Extract {
         )
     }
 
+    private static func applyMixSpecOverrides(
+        ticket: Ticket,
+        mixRowLines: String?
+    ) -> Ticket {
+        guard let mixRowLines,
+              let description = ticket.mixCustomer.description else {
+            return ticket
+        }
+        let hasHrVariant = mixRowLines.range(
+            of: #"\b20MM\s*HR\b"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+        guard hasHrVariant,
+              description.uppercased().contains("20MM SP") else {
+            return ticket
+        }
+
+        let swapped = replacePattern(
+            in: description,
+            pattern: #"\b20MM\s+SP\b"#,
+            with: "20MM HR"
+        )
+        guard swapped != description else { return ticket }
+
+        let mixCustomer = MixRow(
+            qty: ticket.mixCustomer.qty,
+            customerDescription: ticket.mixCustomer.customerDescription,
+            description: swapped,
+            code: ticket.mixCustomer.code,
+            slump: ticket.mixCustomer.slump
+        )
+
+        return Ticket(
+            ticketNumber: ticket.ticketNumber,
+            deliveryDate: ticket.deliveryDate,
+            deliveryTime: ticket.deliveryTime,
+            deliveryAddress: ticket.deliveryAddress,
+            mixCustomer: mixCustomer,
+            mixAdditional1: ticket.mixAdditional1,
+            mixAdditional2: ticket.mixAdditional2,
+            extraCharges: ticket.extraCharges
+        )
+    }
+
     private static func parseMixParsedHints(_ mixParsedHints: String) -> [MixParsedHintRow] {
         let lines = mixParsedHints.split(separator: "\n", omittingEmptySubsequences: true)
         var rows: [MixParsedHintRow] = []
@@ -1836,6 +1885,28 @@ enum Extract {
         return false
     }
 
+    private static func shouldPreferSpecVariant(existing: String, candidate: String) -> Bool {
+        let normalizedExisting = normalizeSpecLine(existing)
+        let normalizedCandidate = normalizeSpecLine(candidate)
+        if normalizedExisting == normalizedCandidate {
+            return false
+        }
+        let existingTokens = normalizedExisting.split(whereSeparator: { $0.isWhitespace })
+        let candidateTokens = normalizedCandidate.split(whereSeparator: { $0.isWhitespace })
+        guard existingTokens.count == candidateTokens.count, !existingTokens.isEmpty else { return false }
+        var diffIndex: Int? = nil
+        for (index, token) in existingTokens.enumerated() {
+            if token != candidateTokens[index] {
+                if diffIndex != nil {
+                    return false
+                }
+                diffIndex = index
+            }
+        }
+        guard let diffIndex else { return false }
+        return existingTokens[diffIndex] == "SP" && candidateTokens[diffIndex] == "HR"
+    }
+
     private static func shouldPreserveCustomerWeather(existing: String?, hint: String?) -> Bool {
         guard let existing = trimmedNonEmpty(existing) else { return false }
         guard let hint = trimmedNonEmpty(hint) else { return false }
@@ -1908,6 +1979,22 @@ enum Extract {
         line.contains("MPA") || line.contains("%") || line.contains("N 20MM") || line.contains("20MM")
     }
 
+    private static func isCustomerSpecHeaderLine(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        return trimmed.hasPrefix("WEATHERMIX") || trimmed.hasPrefix("WEATHER")
+    }
+
+    private static func isSpecModifierLine(_ line: String) -> Bool {
+        let upper = line.uppercased()
+        if isCustomerSpecHeaderLine(upper) {
+            return true
+        }
+        if upper.rangeOfCharacter(from: .decimalDigits) != nil {
+            return false
+        }
+        return containsLetters(upper)
+    }
+
     private static func isCustomerMixCode(_ value: String) -> Bool {
         let upper = value.uppercased()
         return upper.hasPrefix("RM")
@@ -1916,6 +2003,9 @@ enum Extract {
     private static func isMixNoiseLine(_ line: String) -> Bool {
         let upper = line.uppercased()
         if upper.contains("NO MANUAL ADDITIONS") {
+            return true
+        }
+        if upper.contains("MANUAL ADDITIONS") {
             return true
         }
         if upper.hasPrefix("N/A") || upper.hasPrefix("NA -") {
@@ -1944,6 +2034,7 @@ enum Extract {
     private static func supplementRowSpecs(
         _ hints: inout [MixParsedHintRow],
         allLines: [String],
+        rawLines: [String],
         codePattern: String,
         slumpPattern: String
     ) {
@@ -1966,15 +2057,106 @@ enum Extract {
             candidates.append(mergeSplitWordTokens(cleaned))
         }
 
+        let combinedCandidates = combinedSpecBlockCandidates(
+            allLines: rawLines,
+            codePattern: codePattern,
+            numericCodePattern: numericCodePattern,
+            slumpPattern: slumpPattern
+        )
+        candidates.append(contentsOf: combinedCandidates)
+
         guard !candidates.isEmpty else { return }
         let current = mergeSplitWordTokens(hints[0].spec)
         var best = current
         for candidate in candidates {
-            if shouldUseHint(existing: best, hint: candidate) {
+            if shouldUseHint(existing: best, hint: candidate) ||
+                shouldPreferSpecVariant(existing: best, candidate: candidate) {
                 best = candidate
             }
         }
+
+        if best.uppercased().contains("20MM SP") {
+            let hasHrVariant = rawLines.contains { line in
+                line.uppercased().contains("20MM HR")
+            }
+            if hasHrVariant {
+                let swapped = replacePattern(
+                    in: best,
+                    pattern: #"\b20MM\s+SP\b"#,
+                    with: "20MM HR"
+                )
+                if swapped != best,
+                   shouldUseHint(existing: best, hint: swapped) ||
+                    shouldPreferSpecVariant(existing: best, candidate: swapped) {
+                    best = swapped
+                }
+            }
+        }
+
         hints[0].spec = best
+    }
+
+    private static func combinedSpecBlockCandidates(
+        allLines: [String],
+        codePattern: String,
+        numericCodePattern: String,
+        slumpPattern: String
+    ) -> [String] {
+        var candidates: [String] = []
+        var currentParts: [String] = []
+        var currentHasCore = false
+
+        func flush() {
+            guard currentHasCore, currentParts.count >= 2 else {
+                currentParts.removeAll()
+                currentHasCore = false
+                return
+            }
+            let combined = currentParts.joined(separator: " ")
+            candidates.append(mergeSplitWordTokens(combined))
+            currentParts.removeAll()
+            currentHasCore = false
+        }
+
+        for line in allLines {
+            if isIgnoredMixLine(line) {
+                continue
+            }
+            let candidate = stripLeadingQty(line)
+            let cleaned = stripMixSpecCandidate(
+                candidate,
+                codePattern: codePattern,
+                numericCodePattern: numericCodePattern,
+                slumpPattern: slumpPattern
+            )
+            guard let cleaned = trimmedNonEmpty(cleaned) else {
+                flush()
+                continue
+            }
+            guard containsLetters(cleaned) else {
+                flush()
+                continue
+            }
+            let upper = cleaned.uppercased()
+            let isCore = isCustomerSpecLine(upper)
+            let isModifier = isSpecModifierLine(upper)
+            if isCore || isModifier {
+                currentParts.append(cleaned)
+                if isCore {
+                    currentHasCore = true
+                }
+            } else {
+                flush()
+            }
+        }
+        flush()
+
+        if candidates.count > 1 {
+            var seen = Set<String>()
+            candidates = candidates.filter { seen.insert(normalizeSpecLine($0)).inserted }
+        }
+
+        return candidates
     }
 
     private static func mergeSplitWordTokens(_ value: String) -> String {

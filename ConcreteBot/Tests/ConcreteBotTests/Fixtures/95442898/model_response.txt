@@ -1,0 +1,55 @@
+```json
+{
+  "Ticket No.": "95442898",
+  "Delivery Date": "Fri, Nov 14 2025",
+  "Delivery Time": "09:20",
+  "Delivery Address": "596 Lolita Gardens, Mississauga, ON L5A 4N8",
+
+  "Mix Customer": {
+    "Qty": "3.00 m³",
+    "Cust. Descr.": "ECOPACT 35MPA C-1 20MM",
+    "Description": "ECOPACT 35MPA C-1 20MM",
+    "Code": "RMES351511X 80+-30",
+    "Slump": "80+-30"
+  },
+
+  "Mix Additional 1": {
+    "Qty": null,
+    "Cust. Descr.": null,
+    "Description": null,
+    "Code": null,
+    "Slump": null
+  },
+
+  "Mix Additional 2": {
+    "Qty": null,
+    "Cust. Descr.": null,
+    "Description": null,
+    "Code": null,
+    "Slump": null
+  },
+
+  "Extra Charges": [
+    {
+      "Description": "3.00 TOARC FEE (M3)",
+      "Qty": "3.00"
+    },
+    {
+      "Description": "3.00 FLEX FUEL FEE 1-INN",
+      "Qty": "3.00"
+    },
+    {
+      "Description": "3.00 SITE WASH WATER MANAGEMENT FEE",
+      "Qty": "3.00"
+    },
+    {
+      "Description": "3.00 SEASONAL/MANUTE (PER M3)",
+      "Qty": "3.00"
+    },
+    {
+      "Description": "3.00 ENVIRONMENTAL/ENVIRONNEMENT",
+      "Qty": "3.00"
+    }
+  ]
+}
+```

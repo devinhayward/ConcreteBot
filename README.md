@@ -24,3 +24,19 @@ ConcreteBot reads each page in the range and sends it to the system model for ex
    ```
    swift run ConcreteBot extract --pdf /path/to/tickets.pdf --pages 2-23 --out /path/to/output --response-file /path/to/response.txt
    ```
+
+Batch mode:
+- concretebot batch --csv <path> [--pages <range|auto>] [--out <dir>] [--print-prompt]
+
+CSV format (one row per PDF):
+- Column 1: pdf path (required)
+- Column 2: pages (optional; overrides --pages for that row)
+- Header row is optional (accepted headers: pdf,pdf_path,path,file + optional pages column)
+- Blank lines and lines starting with # are ignored
+
+Example CSV:
+pdf,pages
+/path/to/ticket-1.pdf,1-2
+/path/to/ticket-2.pdf
+
+example - swift run ConcreteBot batch --csv /path/to/csvfile.csv --pages auto --out /path/to/out directory

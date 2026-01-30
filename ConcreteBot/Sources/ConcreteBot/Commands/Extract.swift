@@ -1414,7 +1414,8 @@ enum Extract {
                     continue
                 }
                 if hasUpcomingCustomerSpec,
-                   isSpecModifierLine(cleanedUpper) {
+                   isSpecModifierLine(cleanedUpper),
+                   !isCustomerSpecHeaderLine(cleanedUpper) {
                     continue
                 }
                 let isSpec = isCustomerSpecLine(cleanedUpper) || containsLetters(cleaned)
@@ -1427,7 +1428,8 @@ enum Extract {
                     continue
                 }
                 if hasUpcomingCustomerSpec,
-                   isSpecModifierLine(candidateUpper) {
+                   isSpecModifierLine(candidateUpper),
+                   !isCustomerSpecHeaderLine(candidateUpper) {
                     continue
                 }
 
@@ -1444,9 +1446,14 @@ enum Extract {
 
         let merged = mergeSpecFragments(specParts)
         let ordered = orderSpecParts(merged)
-        let spec = collapseRepeatedSpecSequence(
+        var spec = collapseRepeatedSpecSequence(
             dedupeSpecParts(ordered).joined(separator: " ")
         )
+        spec = collapseRepeatedMpaTokenSequence(spec)
+        if let collapsed = collapseRepeatedMpaSequence(spec) {
+            spec = collapsed
+        }
+        spec = stripRedundantAlphaSuffixTokens(spec)
         return MixParsedHintRow(qty: qty ?? "", code: code ?? "", slump: slump ?? "", spec: spec)
     }
 
@@ -1567,27 +1574,20 @@ enum Extract {
                     hint: hintSpec,
                     additionalTokens: additionalTokens
                 ) {
-                if let existingDescription = mixCustomer.description,
+                var adjustedHint = hintSpec
+                if let hintValue = hintSpec,
+                   let existingDescription = mixCustomer.description,
                    isHeaderLikeDescription(existingDescription),
-                   let hintValue = hintSpec,
-                   hintValue.uppercased().hasPrefix("STANDARD") {
-                    // Keep header-like description so normalization can apply STANDARD stripping heuristics.
-                } else {
-                    var adjustedHint = hintSpec
-                    if let hintValue = hintSpec,
-                       let existingDescription = mixCustomer.description,
-                       isHeaderLikeDescription(existingDescription),
-                       let stripped = stripStandardPrefix(hintValue) {
-                        adjustedHint = stripped
-                    }
-                    mixCustomer = MixRow(
-                        qty: mixCustomer.qty,
-                        customerDescription: mixCustomer.customerDescription,
-                        description: adjustedHint,
-                        code: mixCustomer.code,
-                        slump: mixCustomer.slump
-                    )
+                   let stripped = stripStandardPrefix(hintValue) {
+                    adjustedHint = stripped
                 }
+                mixCustomer = MixRow(
+                    qty: mixCustomer.qty,
+                    customerDescription: mixCustomer.customerDescription,
+                    description: adjustedHint,
+                    code: mixCustomer.code,
+                    slump: mixCustomer.slump
+                )
             }
             if let hintQty {
                 let normalizedExisting = normalizeQty(mixCustomer.qty)
@@ -1845,50 +1845,178 @@ enum Extract {
         guard let mixRowLines else {
             return ticket
         }
+        let has20mm = mixRowLines.range(
+            of: #"\b20MM\b"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
         let hasHrVariant = mixRowLines.range(
             of: #"\b20MM\s*HR\b"#,
             options: [.regularExpression, .caseInsensitive]
-        ) != nil
+        ) != nil || (has20mm && mixRowLines.range(
+            of: #"\bHR\b"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil)
         let hasSpVariant = mixRowLines.range(
             of: #"\b20MM\s*SP\b"#,
             options: [.regularExpression, .caseInsensitive]
-        ) != nil
+        ) != nil || (has20mm && mixRowLines.range(
+            of: #"\bSP\b"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil)
         guard hasHrVariant || hasSpVariant else { return ticket }
 
         var mixCustomer = ticket.mixCustomer
+        let hasWeatherVariant = mixRowLines.range(
+            of: #"\bWEATHERMIX\b|\bWEATHER\b"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
 
-        if hasHrVariant,
-           let description = mixCustomer.description,
-           description.uppercased().contains("20MM SP") {
-            let swapped = replacePattern(
-                in: description,
-                pattern: #"\b20MM\s+SP\b"#,
-                with: "20MM HR"
-            )
-            if swapped != description {
+        if hasHrVariant, hasSpVariant {
+            let combinedSpec = [mixCustomer.customerDescription, mixCustomer.description]
+                .compactMap { trimmedNonEmpty($0) }
+                .first(where: { spec in
+                    let upper = spec.uppercased()
+                    return upper.contains("20MM HR") && upper.contains("20MM SP")
+                })
+            if let combinedSpec,
+               let variants = splitHrSpVariants(from: combinedSpec) {
+                let desiredCustomer = hasWeatherVariant ? variants.sp : variants.hr
+                let desiredDescription = hasWeatherVariant ? variants.hr : variants.sp
                 mixCustomer = MixRow(
                     qty: mixCustomer.qty,
-                    customerDescription: mixCustomer.customerDescription,
-                    description: swapped,
+                    customerDescription: desiredCustomer,
+                    description: desiredDescription,
                     code: mixCustomer.code,
                     slump: mixCustomer.slump
                 )
+
+                if mixCustomer.customerDescription != ticket.mixCustomer.customerDescription ||
+                    mixCustomer.description != ticket.mixCustomer.description {
+                    return Ticket(
+                        ticketNumber: ticket.ticketNumber,
+                        deliveryDate: ticket.deliveryDate,
+                        deliveryTime: ticket.deliveryTime,
+                        deliveryAddress: ticket.deliveryAddress,
+                        mixCustomer: mixCustomer,
+                        mixAdditional1: ticket.mixAdditional1,
+                        mixAdditional2: ticket.mixAdditional2,
+                        extraCharges: ticket.extraCharges
+                    )
+                }
             }
         }
 
-        if hasSpVariant,
-           let customerDescription = mixCustomer.customerDescription,
-           customerDescription.uppercased().contains("20MM HR") {
-            let swapped = replacePattern(
-                in: customerDescription,
-                pattern: #"\b20MM\s+HR\b"#,
-                with: "20MM SP"
-            )
-            if swapped != customerDescription {
+        if hasWeatherVariant {
+            if hasHrVariant,
+               let description = mixCustomer.description,
+               description.uppercased().contains("20MM SP") {
+                let swapped = replacePattern(
+                    in: description,
+                    pattern: #"\b20MM\s+SP\b"#,
+                    with: "20MM HR"
+                )
+                if swapped != description {
+                    mixCustomer = MixRow(
+                        qty: mixCustomer.qty,
+                        customerDescription: mixCustomer.customerDescription,
+                        description: swapped,
+                        code: mixCustomer.code,
+                        slump: mixCustomer.slump
+                    )
+                }
+            }
+
+            if hasSpVariant,
+               let customerDescription = mixCustomer.customerDescription,
+               customerDescription.uppercased().contains("20MM HR") {
+                let swapped = replacePattern(
+                    in: customerDescription,
+                    pattern: #"\b20MM\s+HR\b"#,
+                    with: "20MM SP"
+                )
+                if swapped != customerDescription {
+                    mixCustomer = MixRow(
+                        qty: mixCustomer.qty,
+                        customerDescription: swapped,
+                        description: mixCustomer.description,
+                        code: mixCustomer.code,
+                        slump: mixCustomer.slump
+                    )
+                }
+            }
+        } else {
+            if hasSpVariant,
+               let description = mixCustomer.description,
+               description.uppercased().contains("20MM HR") {
+                let swapped = replacePattern(
+                    in: description,
+                    pattern: #"\b20MM\s+HR\b"#,
+                    with: "20MM SP"
+                )
+                if swapped != description {
+                    mixCustomer = MixRow(
+                        qty: mixCustomer.qty,
+                        customerDescription: mixCustomer.customerDescription,
+                        description: swapped,
+                        code: mixCustomer.code,
+                        slump: mixCustomer.slump
+                    )
+                }
+            }
+
+            if hasHrVariant,
+               let customerDescription = mixCustomer.customerDescription,
+               customerDescription.uppercased().contains("20MM SP") {
+                let swapped = replacePattern(
+                    in: customerDescription,
+                    pattern: #"\b20MM\s+SP\b"#,
+                    with: "20MM HR"
+                )
+                if swapped != customerDescription {
+                    mixCustomer = MixRow(
+                        qty: mixCustomer.qty,
+                        customerDescription: swapped,
+                        description: mixCustomer.description,
+                        code: mixCustomer.code,
+                        slump: mixCustomer.slump
+                    )
+                }
+            }
+        }
+
+        if hasWeatherVariant {
+            let weatherToken: String = mixRowLines.range(
+                of: #"\bWEATHERMIX\b"#,
+                options: [.regularExpression, .caseInsensitive]
+            ) != nil ? "WEATHERMIX" : "WEATHER"
+
+            func applyWeatherPrefix(_ value: String?) -> String? {
+                guard let value = trimmedNonEmpty(value) else { return value }
+                let mergedValue = replacePattern(
+                    in: replacePattern(
+                        in: value,
+                        pattern: #"\bWEATHE\s+R\b"#,
+                        with: "WEATHER"
+                    ),
+                    pattern: #"\bWEATHE\s+RMIX\b"#,
+                    with: "WEATHERMIX"
+                )
+                let normalized = normalizeSpecLine(mergedValue)
+                if normalized.contains("WEATHERMIX") || normalized.contains("WEATHER") {
+                    return mergedValue
+                }
+                guard normalized.contains("MPA") || normalized.contains("20MM") else { return value }
+                return "\(weatherToken) \(mergedValue)"
+            }
+
+            let updatedCustomer = applyWeatherPrefix(mixCustomer.customerDescription)
+            let updatedDescription = applyWeatherPrefix(mixCustomer.description)
+            if updatedCustomer != mixCustomer.customerDescription ||
+                updatedDescription != mixCustomer.description {
                 mixCustomer = MixRow(
                     qty: mixCustomer.qty,
-                    customerDescription: swapped,
-                    description: mixCustomer.description,
+                    customerDescription: updatedCustomer,
+                    description: updatedDescription,
                     code: mixCustomer.code,
                     slump: mixCustomer.slump
                 )
@@ -2078,6 +2206,29 @@ enum Extract {
         guard tokens.count >= 2 else { return value }
         let normalized = normalizeSpecLine(value).split(whereSeparator: { $0.isWhitespace })
         guard normalized.count == tokens.count else { return value }
+        if !normalized.contains("STANDARD"),
+           let collapsed = collapseRepeatedMpaSequence(value) {
+            return collapsed
+        }
+        if let segment = selectBestSpecSegmentByMpa(tokens: tokens) {
+            return segment
+        }
+        if let result = collapseRepeatedSpecSequenceForCorePrefix(tokens: tokens, normalized: normalized) {
+            return result
+        }
+        if normalized.first == "STANDARD" {
+            for start in 1..<normalized.count {
+                if normalized[start] != "STANDARD" {
+                    continue
+                }
+                let prefix = Array(normalized[1..<start])
+                let suffix = Array(normalized[(start + 1)...])
+                if !prefix.isEmpty, prefix == suffix {
+                    let spec = tokens[1..<start].joined(separator: " ")
+                    return "STANDARD \(spec)"
+                }
+            }
+        }
         if tokens.count % 2 == 0 {
             let half = tokens.count / 2
             if normalized[..<half].elementsEqual(normalized[half...]) {
@@ -2103,13 +2254,27 @@ enum Extract {
             let slice = tokens[lastIndex...]
             return slice.joined(separator: " ")
         }
-        if normalizedTokens.first == "STANDAR" {
+        if normalizedTokens.first == "STANDAR" || normalizedTokens.first == "STANDARD" {
             if let dIndex = normalizedTokens.firstIndex(of: "D"), dIndex > 1 {
                 let prefix = Array(normalizedTokens[1..<dIndex])
                 let suffix = Array(normalizedTokens[(dIndex + 1)...])
                 if !prefix.isEmpty, prefix == suffix {
                     let spec = tokens[1..<dIndex].joined(separator: " ")
                     return "STANDARD \(spec)"
+                }
+            }
+            if let dIndex = normalizedTokens.firstIndex(of: "D"), dIndex > 1 {
+                let prefix = Array(normalizedTokens[1..<dIndex])
+                if !prefix.isEmpty {
+                    let suffix = Array(normalizedTokens[(dIndex + 1)...])
+                    if suffix.count == prefix.count * 2 {
+                        let half = suffix.count / 2
+                        if suffix[..<half].elementsEqual(suffix[half...]),
+                           Array(suffix[..<half]) == prefix {
+                            let spec = tokens[1..<dIndex].joined(separator: " ")
+                            return "STANDARD \(spec)"
+                        }
+                    }
                 }
             }
         }
@@ -2130,7 +2295,146 @@ enum Extract {
                 return tokens[..<(count - 2)].joined(separator: " ")
             }
         }
-        return value
+        return stripRedundantAlphaSuffixTokens(value)
+    }
+
+    private static func collapseRepeatedSpecSequenceForCorePrefix(
+        tokens: [Substring],
+        normalized: [Substring]
+    ) -> String? {
+        guard tokens.count >= 6 else { return nil }
+        guard let mpaIndex = normalized.firstIndex(where: { $0.contains("MPA") }), mpaIndex > 0 else {
+            return nil
+        }
+        let prefix = Array(normalized[0...mpaIndex])
+        guard !prefix.isEmpty else { return nil }
+
+        var best: (score: Int, tokens: [Substring])? = nil
+        let prefixSet = Set(prefix.map { String($0) })
+
+        for start in (mpaIndex + 1)..<normalized.count {
+            if !prefixSet.contains(String(normalized[start])) {
+                continue
+            }
+            for end in (start + 1)...normalized.count {
+                let candidate = Array(normalized[start..<end])
+                if !candidate.starts(with: prefix) {
+                    continue
+                }
+                let candidateSet = Set(candidate.map { String($0) })
+                guard candidateSet.isSuperset(of: prefixSet) else { continue }
+                let score = candidate.count
+                if best == nil || score > best!.score {
+                    best = (score, Array(tokens[start..<end]))
+                }
+            }
+        }
+
+        guard let best else { return nil }
+        return stripRedundantAlphaSuffixTokens(best.tokens.joined(separator: " "))
+    }
+
+    private static func selectBestSpecSegmentByMpa(tokens: [Substring]) -> String? {
+        guard tokens.count >= 4 else { return nil }
+        let normalizedTokens = tokens.map { normalizeSpecLine(String($0)) }
+        var mpaIndices: [Int] = []
+        for index in 0..<(normalizedTokens.count - 1) {
+            if matches(normalizedTokens[index], pattern: #"^\d+(?:\.\d+)?$"#),
+               normalizedTokens[index + 1] == "MPA" {
+                mpaIndices.append(index)
+            }
+        }
+        guard mpaIndices.count > 1 else { return nil }
+
+        var bestIndex: Int? = nil
+        var bestScore = -1
+        var bestLength = -1
+        for (position, start) in mpaIndices.enumerated() {
+            let end = position + 1 < mpaIndices.count ? mpaIndices[position + 1] : tokens.count
+            guard start < end else { continue }
+            let segmentTokens = Array(tokens[start..<end])
+            let letterScore = segmentTokens.reduce(0) { total, token in
+                let str = String(token)
+                return total + (str.rangeOfCharacter(from: .letters) != nil ? str.count : 0)
+            }
+            if letterScore > bestScore || (letterScore == bestScore && segmentTokens.count > bestLength) {
+                bestScore = letterScore
+                bestLength = segmentTokens.count
+                bestIndex = position
+            }
+        }
+
+        guard let bestIndex else { return nil }
+        let start = mpaIndices[bestIndex]
+        let end = bestIndex + 1 < mpaIndices.count ? mpaIndices[bestIndex + 1] : tokens.count
+        let segment = tokens[start..<end].joined(separator: " ")
+        return stripRedundantAlphaSuffixTokens(segment)
+    }
+
+    private static func stripRedundantAlphaSuffixTokens(_ value: String) -> String {
+        let tokens = value.split(whereSeparator: { $0.isWhitespace })
+        guard tokens.count > 1 else { return value }
+        var result: [Substring] = []
+        result.reserveCapacity(tokens.count)
+        for token in tokens {
+            if let last = result.last {
+                let lastStr = String(last)
+                let tokenStr = String(token)
+                if tokenStr.count >= 3,
+                   lastStr.count >= tokenStr.count,
+                   lastStr.allSatisfy({ $0.isLetter }),
+                   tokenStr.allSatisfy({ $0.isLetter }),
+                   lastStr.uppercased().hasSuffix(tokenStr.uppercased()) {
+                    continue
+                }
+            }
+            result.append(token)
+        }
+        return result.joined(separator: " ")
+    }
+
+    private static func collapseRepeatedMpaTokenSequence(_ value: String) -> String {
+        let tokens = value.split(whereSeparator: { $0.isWhitespace })
+        guard tokens.count >= 4 else { return value }
+        let numericPattern = #"^\d+(?:\.\d+)?$"#
+        var mpaIndices: [Int] = []
+        for index in 0..<(tokens.count - 1) {
+            if matches(String(tokens[index]), pattern: numericPattern),
+               tokens[index + 1].uppercased() == "MPA" {
+                mpaIndices.append(index)
+            }
+        }
+        guard mpaIndices.count > 1 else { return value }
+        let start = mpaIndices.last ?? 0
+        let segment = tokens[start...].joined(separator: " ")
+        return stripRedundantAlphaSuffixTokens(segment)
+    }
+
+    private static func collapseRepeatedMpaSequence(_ value: String) -> String? {
+        let pattern = #"\b\d+(?:\.\d+)?\s*MPA\b"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+        let range = NSRange(value.startIndex..., in: value)
+        let matches = regex.matches(in: value, options: [], range: range)
+        guard matches.count > 1 else { return nil }
+
+        let matchStrings: [String] = matches.compactMap { match in
+            guard let range = Range(match.range, in: value) else { return nil }
+            return String(value[range]).uppercased()
+        }
+        guard let lastMatch = matches.last,
+              let lastRange = Range(lastMatch.range, in: value) else {
+            return nil
+        }
+        let lastValue = matchStrings.last ?? ""
+        if matchStrings.filter({ $0 == lastValue }).count < 2 {
+            return nil
+        }
+
+        let tail = String(value[lastRange.lowerBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tail.isEmpty else { return nil }
+        return stripRedundantAlphaSuffixTokens(tail)
     }
 
     private static func stripLeadingQty(_ value: String) -> String {
@@ -2145,17 +2449,80 @@ enum Extract {
 
     private static func normalizeQty(_ value: String?) -> String? {
         guard let value else { return nil }
-        let pattern = #"^\s*(\d+(?:\.\d+)?)\s*(m3|m³)?\b"#
+        let pattern = #"^\s*(\d+(?:\.\d+)?)"#
         guard let match = firstMatch(in: value, pattern: pattern), match.count >= 2 else {
             return nil
         }
         let number = match[1]
         guard !number.isEmpty else { return nil }
-        if match.count >= 3, !match[2].isEmpty {
-            let unit = match[2].contains("³") ? "m³" : "m3"
+        let lower = value.lowercased()
+        if lower.contains("m³") || lower.contains("m3") {
+            let unit = lower.contains("m³") ? "m³" : "m3"
             return "\(number) \(unit)"
         }
         return number
+    }
+
+    private static func splitHrSpVariants(from value: String) -> (hr: String, sp: String)? {
+        let upper = value.uppercased()
+        guard upper.contains("20MM HR"), upper.contains("20MM SP") else { return nil }
+        let tokens = value.split(whereSeparator: { $0.isWhitespace })
+        let normalizedTokens = tokens.map { normalizeSpecLine(String($0)) }
+        let standardIndices = normalizedTokens.enumerated().compactMap { index, token in
+            token == "STANDARD" ? index : nil
+        }
+
+        if standardIndices.count >= 2 {
+            struct Segment {
+                let tokens: [Substring]
+                let normalized: [String]
+            }
+            var segments: [Segment] = []
+            for (position, start) in standardIndices.enumerated() {
+                let end = position + 1 < standardIndices.count ? standardIndices[position + 1] : tokens.count
+                guard start < end else { continue }
+                let segmentTokens = Array(tokens[start..<end])
+                let segmentNormalized = Array(normalizedTokens[start..<end])
+                segments.append(Segment(tokens: segmentTokens, normalized: segmentNormalized))
+            }
+
+            let hrSegment = segments.first { $0.normalized.contains("HR") }
+            let spSegment = segments.first { $0.normalized.contains("SP") }
+            if let hrSegment, let spSegment {
+                var baseSpec = hrSegment.tokens.joined(separator: " ")
+                if !hrSegment.normalized.contains("NA"), spSegment.normalized.contains("NA"),
+                   baseSpec.range(of: #"\b20MM\b"#, options: [.regularExpression, .caseInsensitive]) != nil {
+                    baseSpec = replacePattern(
+                        in: baseSpec,
+                        pattern: #"\b20MM\b"#,
+                        with: "NA 20MM"
+                    )
+                }
+                let hrValue = collapseRepeatedSpecSequence(baseSpec)
+                let spValue = collapseRepeatedSpecSequence(
+                    replacePattern(
+                        in: hrValue,
+                        pattern: #"\b20MM\s+HR\b"#,
+                        with: "20MM SP"
+                    )
+                )
+                return (hrValue, spValue)
+            }
+        }
+
+        let hrValue = replacePattern(
+            in: value,
+            pattern: #"\b20MM\s+SP\b"#,
+            with: "20MM HR"
+        )
+        let spValue = replacePattern(
+            in: value,
+            pattern: #"\b20MM\s+HR\b"#,
+            with: "20MM SP"
+        )
+        let collapsedHr = collapseRepeatedSpecSequence(hrValue)
+        let collapsedSp = collapseRepeatedSpecSequence(spValue)
+        return (collapsedHr, collapsedSp)
     }
 
     private static func stripMixHeaderPrefix(_ value: String) -> String {
@@ -2244,7 +2611,7 @@ enum Extract {
     }
 
     private static func stripStandardPrefix(_ value: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: #"^\s*STANDARD\b\s*"#,
+        guard let regex = try? NSRegularExpression(pattern: #"^\s*STANDAR[D]?\b\s*"#,
                                                    options: [.caseInsensitive]) else {
             return nil
         }
@@ -2317,6 +2684,27 @@ enum Extract {
             if isSubset {
                 return true
             }
+        }
+        let collapsedExisting = collapseRepeatedSpecSequence(existing)
+        let collapsedMpa = collapseRepeatedMpaTokenSequence(collapsedExisting)
+        let collapsedFinal = collapseRepeatedMpaSequence(collapsedMpa) ?? collapsedMpa
+        let normalizedCollapsed = normalizeSpecLine(collapsedFinal)
+        if normalizedCollapsed == normalizedHint {
+            let existingHasStandard = existingTokens.contains { token in
+                token == "STANDARD" || token == "STANDAR"
+            }
+            let hintHasStandard = hintTokens.contains { token in
+                token == "STANDARD" || token == "STANDAR"
+            }
+            if existingHasStandard && !hintHasStandard {
+                return false
+            }
+            let existingHasHrSp = existingTokens.contains("HR") && existingTokens.contains("SP")
+            let hintHasHrSp = hintTokens.contains("HR") && hintTokens.contains("SP")
+            if existingHasHrSp && !hintHasHrSp {
+                return false
+            }
+            return true
         }
         return false
     }
@@ -2574,7 +2962,13 @@ enum Extract {
             }
         }
 
-        hints[0].spec = collapseRepeatedSpecSequence(best)
+        var normalizedBest = collapseRepeatedSpecSequence(best)
+        normalizedBest = collapseRepeatedMpaTokenSequence(normalizedBest)
+        if let collapsed = collapseRepeatedMpaSequence(normalizedBest) {
+            normalizedBest = collapsed
+        }
+        normalizedBest = stripRedundantAlphaSuffixTokens(normalizedBest)
+        hints[0].spec = normalizedBest
     }
 
     private static func combinedSpecBlockCandidates(
@@ -2663,6 +3057,13 @@ enum Extract {
             let str = String(token)
             if str.count == 1, let last = merged.last, str.allSatisfy({ $0.isLetter }),
                last.allSatisfy({ $0.isLetter }), last.count >= 3 {
+                merged[merged.count - 1] = last + str
+            } else if str.count <= 6,
+                      let last = merged.last,
+                      str.allSatisfy({ $0.isLetter }),
+                      last.allSatisfy({ $0.isLetter }),
+                      last.count >= 5,
+                      last.count + str.count <= 12 {
                 merged[merged.count - 1] = last + str
             } else {
                 merged.append(str)

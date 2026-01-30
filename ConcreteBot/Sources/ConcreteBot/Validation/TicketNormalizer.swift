@@ -235,6 +235,10 @@ enum TicketNormalizer {
                let description,
                normalizedSpecWithoutStandard(customer) == normalizeSpecLine(description) {
                 // Keep description without STANDARD when it matches the customer spec.
+            } else if let customer,
+                      let description,
+                      preferSpecVariant(customer, description) == customer {
+                // Keep the non-preferred SP variant in description when customer is HR.
             } else {
                 normalizedDescription = best
             }
@@ -755,6 +759,7 @@ enum TicketNormalizer {
         guard !hasStandardToken(description) else { return description }
         guard customerDescription.uppercased().hasPrefix("STANDARD ") else { return description }
         if let rawDescription = rawDescription?.trimmedNonEmpty {
+            guard hasStandardToken(rawDescription) else { return description }
             guard !hasTruncatedStandardPrefix(rawDescription) else { return description }
             guard !isHeaderLikeDescription(rawDescription) else { return description }
             guard !rawDescriptionHasMixCode(rawDescription) else { return description }

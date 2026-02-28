@@ -43,6 +43,9 @@ struct BatchOptions {
 enum CLICommand {
     case extract(CLIOptions)
     case batch(BatchOptions)
+    case regress(RegressionOptions)
+    case dumpText(DumpTextOptions)
+    case promptOverrides(PromptOverridesOptions)
 }
 
 func printUsage() {
@@ -52,6 +55,9 @@ func printUsage() {
     Usage:
       concretebot extract --pdf <path> --pages <range|auto> [--out <dir>] [--print-prompt] [--response-file <path>] [--response-stdin] [--response-out <path>]
       concretebot batch --csv <path> [--pages <range|auto>] [--out <dir>] [--print-prompt]
+      concretebot regress [--fixtures <dir>] [--out <path>]
+      concretebot dump-text --pdf <path> --pages <range> [--out <path|dir>]
+      concretebot prompt-overrides --pdf <path> --pages <range> [--out <dir>]
 
     Options:
       --pdf       Path to the PDF file.
@@ -62,6 +68,10 @@ func printUsage() {
       --response-file  Path to a file containing model JSON response.
       --response-stdin Read model JSON response from stdin.
       --response-out   Write raw model response to a file (extract only).
+      --fixtures  Path to regression fixtures directory (default: Tests/ConcreteBotTests/Fixtures).
+      --out       Output path for regression report (file or directory; regress only).
+      --out       Output path for raw text (file or directory; dump-text only).
+      --out       Output directory for prompt override files (prompt-overrides only).
     """
     print(usage)
 }
@@ -83,6 +93,12 @@ func parseCLI() throws -> CLICommand {
         return .extract(try parseExtractArgs(args))
     case "batch":
         return .batch(try parseBatchArgs(args))
+    case "regress":
+        return .regress(try parseRegressionArgs(args))
+    case "dump-text":
+        return .dumpText(try parseDumpTextArgs(args))
+    case "prompt-overrides":
+        return .promptOverrides(try parsePromptOverridesArgs(args))
     default:
         throw CLIError.unknownCommand(command)
     }
@@ -198,6 +214,114 @@ private func parseBatchArgs(_ args: [String]) throws -> BatchOptions {
     )
 }
 
+private func parseRegressionArgs(_ args: [String]) throws -> RegressionOptions {
+    var fixturesDir = "Tests/ConcreteBotTests/Fixtures"
+    var outputPath: String?
+
+    var index = 0
+    while index < args.count {
+        let arg = args[index]
+        switch arg {
+        case "--fixtures":
+            guard index + 1 < args.count else { throw CLIError.missingArgument("--fixtures") }
+            fixturesDir = args[index + 1]
+            index += 2
+        case "--out":
+            guard index + 1 < args.count else { throw CLIError.missingArgument("--out") }
+            outputPath = args[index + 1]
+            index += 2
+        case "--help", "-h":
+            printUsage()
+            exit(0)
+        default:
+            throw CLIError.invalidArgument(arg)
+        }
+    }
+
+    return RegressionOptions(
+        fixturesDir: fixturesDir,
+        outputPath: outputPath
+    )
+}
+
+private func parseDumpTextArgs(_ args: [String]) throws -> DumpTextOptions {
+    var pdfPath: String?
+    var pages: String?
+    var outputPath: String?
+
+    var index = 0
+    while index < args.count {
+        let arg = args[index]
+        switch arg {
+        case "--pdf":
+            guard index + 1 < args.count else { throw CLIError.missingArgument("--pdf") }
+            pdfPath = args[index + 1]
+            index += 2
+        case "--pages":
+            guard index + 1 < args.count else { throw CLIError.missingArgument("--pages") }
+            pages = args[index + 1]
+            index += 2
+        case "--out":
+            guard index + 1 < args.count else { throw CLIError.missingArgument("--out") }
+            outputPath = args[index + 1]
+            index += 2
+        case "--help", "-h":
+            printUsage()
+            exit(0)
+        default:
+            throw CLIError.invalidArgument(arg)
+        }
+    }
+
+    guard let pdfPathValue = pdfPath else { throw CLIError.missingArgument("--pdf") }
+    guard let pagesValue = pages else { throw CLIError.missingArgument("--pages") }
+
+    return DumpTextOptions(
+        pdfPath: pdfPathValue,
+        pages: pagesValue,
+        outputPath: outputPath
+    )
+}
+
+private func parsePromptOverridesArgs(_ args: [String]) throws -> PromptOverridesOptions {
+    var pdfPath: String?
+    var pages: String?
+    var outputDir = FileManager.default.currentDirectoryPath
+
+    var index = 0
+    while index < args.count {
+        let arg = args[index]
+        switch arg {
+        case "--pdf":
+            guard index + 1 < args.count else { throw CLIError.missingArgument("--pdf") }
+            pdfPath = args[index + 1]
+            index += 2
+        case "--pages":
+            guard index + 1 < args.count else { throw CLIError.missingArgument("--pages") }
+            pages = args[index + 1]
+            index += 2
+        case "--out":
+            guard index + 1 < args.count else { throw CLIError.missingArgument("--out") }
+            outputDir = args[index + 1]
+            index += 2
+        case "--help", "-h":
+            printUsage()
+            exit(0)
+        default:
+            throw CLIError.invalidArgument(arg)
+        }
+    }
+
+    guard let pdfPathValue = pdfPath else { throw CLIError.missingArgument("--pdf") }
+    guard let pagesValue = pages else { throw CLIError.missingArgument("--pages") }
+
+    return PromptOverridesOptions(
+        pdfPath: pdfPathValue,
+        pages: pagesValue,
+        outputDir: outputDir
+    )
+}
+
 func run() throws {
     let command = try parseCLI()
     switch command {
@@ -205,6 +329,12 @@ func run() throws {
         try Extract.run(options: options)
     case .batch(let options):
         try Batch.run(options: options)
+    case .regress(let options):
+        try Regression.run(options: options)
+    case .dumpText(let options):
+        try DumpText.run(options: options)
+    case .promptOverrides(let options):
+        try PromptOverrides.run(options: options)
     }
 }
 

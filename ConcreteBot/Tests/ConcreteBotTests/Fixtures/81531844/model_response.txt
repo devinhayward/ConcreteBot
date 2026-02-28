@@ -1,0 +1,49 @@
+```json
+{
+  "Ticket No.": "81531844",
+  "Delivery Date": "Wed, Nov 12 2025",
+  "Delivery Time": "09:14",
+  "Delivery Address": "600-620 Lolita Gardens Mississauga, ON L5A",
+
+  "Mix Customer": {
+    "Qty": "6.00 m³",
+    "Cust. Descr.": "ECOPACT STANDARD 35MPA C1 20MM COR.INH CORROSION INHIBITOR",
+    "Description": "6.00 m³ ECOPACT STANDAR D 35MPA C1 20MM COR.INH",
+    "Code": "RMES351511A",
+    "Slump": "80+-30"
+  },
+
+  "Mix Additional 1": {
+    "Qty": "6.00 m³",
+    "Cust. Descr.": "CORROSION INHIBITOR ECOPACT STANDARD (10L/M3) B",
+    "Description": "6.00 m³ CORROSION INHIBITOR (10L/M3) B",
+    "Code": "907878",
+    "Slump": ""
+  },
+
+  "Mix Additional 2": null,
+
+  "Extra Charges": [
+    {
+      "Description": "6.00 SEASONAL/MANUTE (PER M3)",
+      "Qty": "6.00"
+    },
+    {
+      "Description": "6.00 TOARC FEE (M3)",
+      "Qty": "6.00"
+    },
+    {
+      "Description": "6.00 FLEX FUEL FEE 1-INN",
+      "Qty": "6.00"
+    },
+    {
+      "Description": "6.00 SITE WASH WATER MANAGEMENT FEE",
+      "Qty": "6.00"
+    },
+    {
+      "Description": "6.00 ENVIRONMENTAL/ENVIRONNEMENT",
+      "Qty": "6.00"
+    }
+  ]
+}
+```

@@ -1,0 +1,38 @@
+```json
+{
+  "Ticket No.": "95441319",
+  "Delivery Date": "Tue, Sep 9 2025",
+  "Delivery Time": "11:26",
+  "Delivery Address": "600-620 Lolita Gardens Mississauga, ON L5A 3K7",
+
+  "Mix Customer": {
+    "Qty": "4.00 m³",
+    "Cust. Descr.": "0.4 MPA UNSHRIN 0.4 MPA UNSHRINKFILL KFILL",
+    "Description": "4.00 m³ 0.4 MPA UNSHRINKFILL RMXFX4N511X 170+-30",
+    "Code": "RMXFX4N511X",
+    "Slump": "170+-30"
+  },
+
+  "Mix Additional 1": null,
+  "Mix Additional 2": null,
+
+  "Extra Charges": [
+    {
+      "Description": "4.00 FLEX FUEL FEE 1-INN",
+      "Qty": "4.00"
+    },
+    {
+      "Description": "SITE WASH WATER MANAGEMENT FEE",
+      "Qty": "4.00"
+    },
+    {
+      "Description": "ENVIRONMENTAL/ENVIRONNEMENT",
+      "Qty": "4.00"
+    },
+    {
+      "Description": "TOARC FEE (M3)",
+      "Qty": "4.00"
+    }
+  ]
+}
+```

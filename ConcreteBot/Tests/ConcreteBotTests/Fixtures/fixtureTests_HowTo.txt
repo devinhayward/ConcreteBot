@@ -1,0 +1,42 @@
+//Below is how to produce Fixture Tests for ConcreteBot
+
+1. Save the proper JSON to the file as expected.JSON
+
+2. Output the RAW PDF text out from the Swift PDF library -> page_text.txt
+
+Use the dump-text CLI to generate the fixture’s page_text.txt.
+
+  From repo root:
+
+  swift run ConcreteBot dump-text --pdf /path/to/ticket.pdf --pages 1 --out
+  Tests/ConcreteBotTests/Fixtures/<fixture-id>/page_text.txt
+
+3. USE RESPONSE-OUT TO CAPTURE RAW MODEL OUTPUT
+
+
+Use extract with --response-out to capture the raw model output -> model_response.txt
+
+  swift run ConcreteBot extract \
+    --pdf /path/to/ticket.pdf \
+    --pages 1 \
+    --out /tmp/extract-out \
+    --response-out Tests/ConcreteBotTests/Fixtures/<fixture-id>/
+  model_response.txt
+
+4. GET ALL THE EXTRA INFO WITH PROMPT OVERRIDES
+
+ Run the prompt-overrides subcommand from repo root:
+
+  swift run ConcreteBot prompt-overrides --pdf /path/to/ticket.pdf --pages 1
+  --out Tests/ConcreteBotTests/Fixtures/<fixture-id>
+
+  That writes the optional override files into the fixture folder:
+
+  - mix_text.txt
+  - mix_row_lines.txt
+  - mix_parsed_hints.txt
+  - extra_charges_text.txt
+
+5. Finally run swift run ConcreteBot regress to print the report to the terminal. Then you can feed this to CODEX to fix the problems.
+
+   swift run ConcreteBot regress

@@ -1,0 +1,5 @@
+Row 1:
+Qty: 9.00 m3
+Code: RMXS45N51NX
+Slump: 150+-30
+Spec: STANDARD 45MPA N NA 20MM HR 20MM SP

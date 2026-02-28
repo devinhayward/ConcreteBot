@@ -3,17 +3,18 @@ import Foundation
 enum TicketNormalizer {
     static func normalize(ticket: Ticket) -> Ticket {
         let normalizedExtraCharges = ticket.extraCharges.map { normalize(extraCharge: $0) }
+        let orderedExtraCharges = reorderExtraCharges(normalizedExtraCharges)
         let extraChargeQtys = Set(
-            normalizedExtraCharges
+            orderedExtraCharges
                 .compactMap { $0.qty?.trimmedNonEmpty }
         )
         let extraChargeDescriptions = Set(
-            normalizedExtraCharges
+            orderedExtraCharges
                 .compactMap { $0.description?.trimmedNonEmpty?.lowercased() }
         )
 
         let deliveryAddress = normalizeDeliveryAddress(ticket.deliveryAddress)
-        let mixCustomer = normalize(
+        var mixCustomer = normalize(
             mixRow: ticket.mixCustomer,
             extraChargeQtys: extraChargeQtys,
             extraChargeDescriptions: extraChargeDescriptions
@@ -33,6 +34,11 @@ enum TicketNormalizer {
                 extraChargeDescriptions: extraChargeDescriptions
             )
         }
+        mixCustomer = stripAdditionalTokens(
+            from: mixCustomer,
+            additions: [mixAdditional1, mixAdditional2]
+        )
+        mixCustomer = normalizeCustomerSpec(mixCustomer)
 
         return Ticket(
             ticketNumber: ticket.ticketNumber,
@@ -42,7 +48,52 @@ enum TicketNormalizer {
             mixCustomer: mixCustomer,
             mixAdditional1: mixAdditional1,
             mixAdditional2: mixAdditional2,
-            extraCharges: normalizedExtraCharges
+            extraCharges: orderedExtraCharges
+        )
+    }
+
+    private static func stripAdditionalTokens(
+        from mixRow: MixRow,
+        additions: [MixRow?]
+    ) -> MixRow {
+        let additionalTokenSet = Set(
+            additions
+                .compactMap { $0?.description?.trimmedNonEmpty }
+                .flatMap { normalizeSpecLine($0).split(whereSeparator: { $0.isWhitespace }) }
+                .map { String($0) }
+                .filter { isMeaningfulAdditionalToken($0) }
+        )
+        guard !additionalTokenSet.isEmpty else { return mixRow }
+
+        func strip(_ value: String?) -> String? {
+            guard let value else { return nil }
+            let tokens = value.split(whereSeparator: { $0.isWhitespace })
+            guard !tokens.isEmpty else { return value }
+            let normalizedTokens = tokens.map { normalizeSpecToken(String($0)) }
+            guard let lastCoreIndex = normalizedTokens.lastIndex(where: { isCoreSpecToken($0) }) else {
+                return value
+            }
+            var kept: [Substring] = []
+            kept.reserveCapacity(tokens.count)
+            for (index, token) in tokens.enumerated() {
+                let normalized = normalizedTokens[index]
+                if index > lastCoreIndex,
+                   additionalTokenSet.contains(normalized),
+                   !isCoreSpecToken(normalized) {
+                    continue
+                }
+                kept.append(token)
+            }
+            let cleaned = kept.joined(separator: " ").trimmedNonEmpty
+            return cleaned ?? value
+        }
+
+        return MixRow(
+            qty: mixRow.qty,
+            customerDescription: strip(mixRow.customerDescription),
+            description: strip(mixRow.description),
+            code: mixRow.code,
+            slump: mixRow.slump
         )
     }
 
@@ -88,9 +139,9 @@ enum TicketNormalizer {
         let mixQtyNumeric = numericPrefix(in: mixRow.qty)
         var code = mixRow.code?.trimmedNonEmpty
         var slump = mixRow.slump?.trimmedNonEmpty
-        let rawDescription = mixRow.description?.trimmedNonEmpty
-        let customerDescription = normalizeMixSpec(mixRow.customerDescription)
-        var description = mixRow.description?.trimmedNonEmpty
+        let rawDescription = stripLeadingMixQty(from: mixRow.description)?.trimmedNonEmpty
+        var customerDescription = normalizeMixSpec(mixRow.customerDescription)
+        var description = stripLeadingMixQty(from: mixRow.description)?.trimmedNonEmpty
         let slumpLooksLikeExtraCharge = isExtraChargeNoise(
             slump,
             extraChargeQtys: extraChargeQtys,
@@ -100,7 +151,9 @@ enum TicketNormalizer {
 
         if let codeValue = code,
            let split = splitTrailingSlump(from: codeValue) {
-            if shouldUseCandidate(
+            if slump == split.slump {
+                code = split.code.trimmedNonEmpty
+            } else if shouldUseCandidate(
                 currentSlump: slump,
                 candidate: split.slump,
                 extraChargeQtys: extraChargeQtys,
@@ -122,6 +175,9 @@ enum TicketNormalizer {
            ) {
             slump = nil
         }
+        if slump == nil {
+            slump = defaultSlump(for: code)
+        }
 
         description = stripMixTokens(
             from: description,
@@ -129,6 +185,16 @@ enum TicketNormalizer {
             slump: slump,
             fallback: customerDescription
         )
+        if let cleanedCustomer = stripMixTokens(
+            from: customerDescription,
+            code: code,
+            slump: slump,
+            fallback: nil
+        ) {
+            customerDescription = cleanedCustomer
+        } else if customerDescription != nil {
+            customerDescription = nil
+        }
         description = normalizeMixSpec(description)
         description = normalizeDescriptionFromHeader(
             description,
@@ -153,6 +219,130 @@ enum TicketNormalizer {
             code: code,
             slump: slump
         )
+    }
+
+    private static func normalizeCustomerSpec(_ mixRow: MixRow) -> MixRow {
+        let customer = mixRow.customerDescription?.trimmedNonEmpty
+        let description = mixRow.description?.trimmedNonEmpty
+        guard customer != nil || description != nil else { return mixRow }
+
+        let best = selectBestSpec(customer, description)
+        var normalizedCustomer = customer
+        var normalizedDescription = description
+
+        if let best, description == nil || best != description {
+            if let customer,
+               let description,
+               normalizedSpecWithoutStandard(customer) == normalizeSpecLine(description) {
+                // Keep description without STANDARD when it matches the customer spec.
+            } else if let customer,
+                      let description,
+                      preferSpecVariant(customer, description) == customer {
+                // Keep the non-preferred SP variant in description when customer is HR.
+            } else {
+                normalizedDescription = best
+            }
+        }
+
+        if let best, best.uppercased().contains("WEATHERMIX") {
+            if normalizedCustomer == nil {
+                let weatherVariant = replaceWeatherMix(best)
+                if weatherVariant != best {
+                    normalizedCustomer = weatherVariant
+                } else if normalizedCustomer == nil {
+                    normalizedCustomer = best
+                }
+            }
+        } else if normalizedCustomer == nil {
+            normalizedCustomer = best
+        }
+
+        return MixRow(
+            qty: mixRow.qty,
+            customerDescription: normalizedCustomer,
+            description: normalizedDescription,
+            code: mixRow.code,
+            slump: mixRow.slump
+        )
+    }
+
+    private static func selectBestSpec(_ first: String?, _ second: String?) -> String? {
+        guard let first, let second else { return first ?? second }
+        if let preferred = preferSpecVariant(first, second) {
+            return preferred
+        }
+        let scoreFirst = specScore(first)
+        let scoreSecond = specScore(second)
+        if scoreFirst == scoreSecond {
+            return first.count >= second.count ? first : second
+        }
+        return scoreFirst >= scoreSecond ? first : second
+    }
+
+    private static func preferSpecVariant(_ first: String, _ second: String) -> String? {
+        let normalizedFirst = normalizeSpecLine(first)
+        let normalizedSecond = normalizeSpecLine(second)
+        if normalizedFirst == normalizedSecond {
+            return nil
+        }
+        let firstTokens = normalizedFirst.split(whereSeparator: { $0.isWhitespace })
+        let secondTokens = normalizedSecond.split(whereSeparator: { $0.isWhitespace })
+        guard firstTokens.count == secondTokens.count, !firstTokens.isEmpty else { return nil }
+        var diffIndex: Int? = nil
+        for (index, token) in firstTokens.enumerated() {
+            if token != secondTokens[index] {
+                if diffIndex != nil {
+                    return nil
+                }
+                diffIndex = index
+            }
+        }
+        guard let diffIndex else { return nil }
+        let firstToken = String(firstTokens[diffIndex])
+        let secondToken = String(secondTokens[diffIndex])
+        if firstToken == "HR" && secondToken == "SP" {
+            return first
+        }
+        if firstToken == "SP" && secondToken == "HR" {
+            return second
+        }
+        return nil
+    }
+
+    private static func specScore(_ value: String) -> Int {
+        let tokens = value.split(whereSeparator: { $0.isWhitespace })
+        var score = value.count
+        let upper = value.uppercased()
+        let singleLetterCount = tokens.filter { $0.count == 1 }.count
+        score -= singleLetterCount * 6
+        if upper.contains("MPA") {
+            score += 10
+        }
+        if upper.contains("WEATHERMIX") {
+            score += 8
+        }
+        if upper.contains("STANDARD") {
+            score += 6
+        }
+        if upper.contains("WEATHER") {
+            score += 4
+        }
+        return score
+    }
+
+    private static func replaceWeatherMix(_ value: String) -> String {
+        let pattern = #"\bWEATHERMIX\b"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return value
+        }
+        let range = NSRange(value.startIndex..., in: value)
+        let replaced = regex.stringByReplacingMatches(
+            in: value,
+            options: [],
+            range: range,
+            withTemplate: "WEATHER"
+        )
+        return replaced
     }
 
     private static func shouldUseCandidate(
@@ -278,6 +468,9 @@ enum TicketNormalizer {
         normalized = expandStandarPrefix(normalized)
         normalized = reorderStandardSpec(normalized)
         normalized = dedupeSpecTokenRuns(normalized)
+        normalized = collapseRepeatedSpecSequence(normalized)
+        normalized = mergeSplitWordTokens(normalized)
+        normalized = moveCorInhToEnd(normalized)
         normalized = normalized.replacingOccurrences(
             of: #"\s{2,}"#,
             with: " ",
@@ -286,13 +479,31 @@ enum TicketNormalizer {
         return normalized.trimmedNonEmpty
     }
 
+    private static func defaultSlump(for code: String?) -> String? {
+        guard let code = code?.trimmedNonEmpty?.uppercased() else { return nil }
+        if code.hasPrefix("RMES") {
+            return "80+-30"
+        }
+        if code.hasPrefix("RMXS") || code.hasPrefix("RMXW") || code.hasPrefix("RMEW") {
+            return "150+-30"
+        }
+        return nil
+    }
+
+    private static func isBrandPrefixToken(_ value: String) -> Bool {
+        guard value.count >= 3 else { return false }
+        guard value.allSatisfy({ $0.isLetter }) else { return false }
+        return value != "STANDARD"
+    }
+
     private static func reorderStandardSpec(_ value: String) -> String {
         let tokens = value.split(whereSeparator: { $0.isWhitespace })
         guard !tokens.isEmpty else { return value }
         let normalizedTokens = tokens.map { normalizeSpecToken(String($0)) }
         guard let standardIndex = normalizedTokens.firstIndex(of: "STANDARD") else { return value }
         guard let mpaIndex = normalizedTokens.firstIndex(where: { $0.contains("MPA") }) else { return value }
-        if standardIndex == 0, mpaIndex == 1 {
+        let prefixBrandIndices = (0..<standardIndex).filter { isBrandPrefixToken(normalizedTokens[$0]) }
+        if prefixBrandIndices.isEmpty, standardIndex == 0, mpaIndex == 1 {
             return value
         }
 
@@ -308,11 +519,17 @@ enum TicketNormalizer {
         }
 
         var reordered: [Substring] = []
+        if !prefixBrandIndices.isEmpty {
+            for index in prefixBrandIndices {
+                reordered.append(tokens[index])
+            }
+        }
         reordered.append(tokens[standardIndex])
         reordered.append(tokens[mpaIndex])
+        let prefixBrandSet = Set(prefixBrandIndices)
 
         for (index, token) in tokens.enumerated() {
-            if index == standardIndex || index == mpaIndex {
+            if index == standardIndex || index == mpaIndex || prefixBrandSet.contains(index) {
                 continue
             }
             let tokenKey = normalizedTokens[index]
@@ -331,6 +548,62 @@ enum TicketNormalizer {
         return trimmed.uppercased()
     }
 
+    private static func isMeaningfulAdditionalToken(_ value: String) -> Bool {
+        guard value.count >= 4 else { return false }
+        return value.allSatisfy({ $0.isLetter })
+    }
+
+    private static func isCoreSpecToken(_ value: String) -> Bool {
+        if value.contains("MPA") || value.contains("MM") {
+            return true
+        }
+        if value == "CORINH" {
+            return true
+        }
+        if value.hasPrefix("C") {
+            let suffix = value.dropFirst()
+            if !suffix.isEmpty, suffix.allSatisfy({ $0.isNumber }) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func mergeSplitWordTokens(_ value: String) -> String {
+        let tokens = value.split(whereSeparator: { $0.isWhitespace })
+        guard tokens.count > 1 else { return value }
+        var merged: [String] = []
+        merged.reserveCapacity(tokens.count)
+        for token in tokens {
+            let str = String(token)
+            if str.count == 1, let last = merged.last, str.allSatisfy({ $0.isLetter }),
+               last.allSatisfy({ $0.isLetter }), last.count >= 3 {
+                merged[merged.count - 1] = last + str
+            } else {
+                merged.append(str)
+            }
+        }
+        return merged.joined(separator: " ")
+    }
+
+    private static func moveCorInhToEnd(_ value: String) -> String {
+        let tokens = value.split(whereSeparator: { $0.isWhitespace })
+        guard tokens.count > 1 else { return value }
+        var regular: [Substring] = []
+        var corInh: [Substring] = []
+        for token in tokens {
+            let normalized = token.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }
+            let key = String(String.UnicodeScalarView(normalized)).uppercased()
+            if key == "CORINH" {
+                corInh.append(token)
+            } else {
+                regular.append(token)
+            }
+        }
+        guard !corInh.isEmpty else { return value }
+        return (regular + corInh).joined(separator: " ")
+    }
+
     private static func dedupeSpecTokenRuns(_ value: String) -> String {
         let tokens = value.split(whereSeparator: { $0.isWhitespace })
         guard tokens.count > 2 else { return value }
@@ -339,9 +612,7 @@ enum TicketNormalizer {
 
         for token in tokens {
             let key = specTokenKey(token)
-            if let last = result.last,
-               key == specTokenKey(last),
-               shouldDropRepeatedSpecToken(key) {
+            if let last = result.last, key == specTokenKey(last) {
                 continue
             }
             if result.count >= 2 {
@@ -355,7 +626,59 @@ enum TicketNormalizer {
             result.append(token)
         }
 
+        if result.count >= 4 {
+            let count = result.count
+            let lastPair = [specTokenKey(result[count - 2]), specTokenKey(result[count - 1])]
+            let prevPair = [specTokenKey(result[count - 4]), specTokenKey(result[count - 3])]
+            if lastPair == prevPair {
+                return result[..<(count - 2)].joined(separator: " ")
+            }
+        }
+
         return result.joined(separator: " ")
+    }
+
+    private static func collapseRepeatedSpecSequence(_ value: String) -> String {
+        let tokens = value.split(whereSeparator: { $0.isWhitespace })
+        guard tokens.count >= 2 else { return value }
+        let normalizedTokens = tokens.map { normalizeSpecToken(String($0)) }
+
+        if normalizedTokens.first == "STANDARD" {
+            if let dIndex = normalizedTokens.firstIndex(of: "D"), dIndex > 1 {
+                let prefix = Array(normalizedTokens[1..<dIndex])
+                let suffix = Array(normalizedTokens[(dIndex + 1)...])
+                if !prefix.isEmpty, prefix == suffix {
+                    let spec = tokens[1..<dIndex].joined(separator: " ")
+                    return "STANDARD \(spec)"
+                }
+            }
+            let remaining = Array(normalizedTokens.dropFirst())
+            if remaining.count >= 2, remaining.count % 2 == 0 {
+                let half = remaining.count / 2
+                if remaining[..<half].elementsEqual(remaining[half...]) {
+                    let spec = tokens[1..<(half + 1)].joined(separator: " ")
+                    return "STANDARD \(spec)"
+                }
+            }
+        }
+
+        if tokens.count % 2 == 0 {
+            let half = tokens.count / 2
+            if normalizedTokens[..<half].elementsEqual(normalizedTokens[half...]) {
+                return tokens[..<half].joined(separator: " ")
+            }
+        }
+
+        if tokens.count >= 4 {
+            let count = tokens.count
+            let lastPair = [normalizedTokens[count - 2], normalizedTokens[count - 1]]
+            let prevPair = [normalizedTokens[count - 4], normalizedTokens[count - 3]]
+            if lastPair == prevPair {
+                return tokens[..<(count - 2)].joined(separator: " ")
+            }
+        }
+
+        return value
     }
 
     private static func specTokenKey(_ token: Substring) -> String {
@@ -436,6 +759,7 @@ enum TicketNormalizer {
         guard !hasStandardToken(description) else { return description }
         guard customerDescription.uppercased().hasPrefix("STANDARD ") else { return description }
         if let rawDescription = rawDescription?.trimmedNonEmpty {
+            guard hasStandardToken(rawDescription) else { return description }
             guard !hasTruncatedStandardPrefix(rawDescription) else { return description }
             guard !isHeaderLikeDescription(rawDescription) else { return description }
             guard !rawDescriptionHasMixCode(rawDescription) else { return description }
@@ -579,6 +903,40 @@ enum TicketNormalizer {
         guard let match = regex.firstMatch(in: value, range: range) else { return nil }
         guard let matchRange = Range(match.range, in: value) else { return nil }
         return String(value[matchRange])
+    }
+
+    private static func stripLeadingMixQty(from value: String?) -> String? {
+        guard let value else { return nil }
+        let pattern = #"^\s*\d+(?:\.\d+)?\s*m(?:3|³)\s*"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return value
+        }
+        let range = NSRange(value.startIndex..., in: value)
+        let stripped = regex.stringByReplacingMatches(in: value, options: [], range: range, withTemplate: "")
+        return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func reorderExtraCharges(_ charges: [ExtraCharge]) -> [ExtraCharge] {
+        guard charges.count > 1 else { return charges }
+        var regular: [ExtraCharge] = []
+        var siteWash: [ExtraCharge] = []
+        for charge in charges {
+            if isSiteWashCharge(charge.description) {
+                siteWash.append(charge)
+            } else {
+                regular.append(charge)
+            }
+        }
+        return regular + siteWash
+    }
+
+    private static func isSiteWashCharge(_ description: String?) -> Bool {
+        guard let description else { return false }
+        let collapsed = description
+            .uppercased()
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        return collapsed.contains("SITE WASH")
     }
 }
 

@@ -1,0 +1,41 @@
+{
+  "Ticket No.": "95443116",
+  "Delivery Date": "Mon, Nov 24 2025",
+  "Delivery Time": "13:55",
+  "Delivery Address": "596 Lolita Gardens Mississauga, ON L5A 4N8",
+  "Mix Customer": {
+    "Qty": "4.50 m³",
+    "Cust. Descr.": "STANDARD 35MPA NA 20MM HR",
+    "Description": "35MPA NA 20MM HR",
+    "Code": "RMXS35N51NX",
+    "Slump": "150+-30"
+  },
+  "Mix Additional 1": null,
+  "Mix Additional 2": null,
+  "Extra Charges": [
+    {
+      "Description": "FLEX FUEL FEE 1-INN",
+      "Qty": "4.50"
+    },
+    {
+      "Description": "SUPERPLASTICIZER EXT",
+      "Qty": "4.50"
+    },
+    {
+      "Description": "TOARC FEE (M3)",
+      "Qty": "4.50"
+    },
+    {
+      "Description": "ENVIRONMENTAL/ENVIRONNEMENT",
+      "Qty": "4.50"
+    },
+    {
+      "Description": "SEASONAL/MANUTE (PER M3)",
+      "Qty": "4.50"
+    },
+    {
+      "Description": "SITE WASH WATER MANAGEMENT FEE",
+      "Qty": "4.50"
+    }
+  ]
+}

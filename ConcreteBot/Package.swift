@@ -28,8 +28,8 @@ let package = Package(
         .testTarget(
             name: "ConcreteBotTests",
             dependencies: ["ConcreteBot"],
-            resources: [
-                .process("Tests/ConcreteBotTests/Fixtures")
+            exclude: [
+                "Fixtures"
             ]
         ),
     ]

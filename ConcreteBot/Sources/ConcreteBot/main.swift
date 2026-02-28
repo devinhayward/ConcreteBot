@@ -31,6 +31,8 @@ struct CLIOptions {
     let responseFile: String?
     let responseStdin: Bool
     let responseOut: String?
+    let modelMode: String
+    let runReport: String?
 }
 
 struct BatchOptions {
@@ -53,7 +55,7 @@ func printUsage() {
     ConcreteBot
 
     Usage:
-      concretebot extract --pdf <path> --pages <range|auto> [--out <dir>] [--print-prompt] [--response-file <path>] [--response-stdin] [--response-out <path>]
+      concretebot extract --pdf <path> --pages <range|auto> [--out <dir>] [--print-prompt] [--response-file <path>] [--response-stdin] [--response-out <path>] [--model-mode <auto|guided|legacy>] [--run-report <path>]
       concretebot batch --csv <path> [--pages <range|auto>] [--out <dir>] [--print-prompt]
       concretebot regress [--fixtures <dir>] [--out <path>]
       concretebot dump-text --pdf <path> --pages <range> [--out <path|dir>]
@@ -68,6 +70,8 @@ func printUsage() {
       --response-file  Path to a file containing model JSON response.
       --response-stdin Read model JSON response from stdin.
       --response-out   Write raw model response to a file (extract only).
+      --model-mode     Extraction model mode: auto, guided, or legacy (default: auto).
+      --run-report     Write per-page extraction telemetry JSON report (extract only).
       --fixtures  Path to regression fixtures directory (default: Tests/ConcreteBotTests/Fixtures).
       --out       Output path for regression report (file or directory; regress only).
       --out       Output path for raw text (file or directory; dump-text only).
@@ -77,7 +81,11 @@ func printUsage() {
 }
 
 func parseCLI() throws -> CLICommand {
-    var args = Array(CommandLine.arguments.dropFirst())
+    return try parseCLI(arguments: CommandLine.arguments)
+}
+
+func parseCLI(arguments: [String]) throws -> CLICommand {
+    var args = Array(arguments.dropFirst())
     guard let command = args.first else {
         throw CLIError.missingCommand
     }
@@ -112,6 +120,8 @@ private func parseExtractArgs(_ args: [String]) throws -> CLIOptions {
     var responseFile: String?
     var responseStdin = false
     var responseOut: String?
+    var modelMode = "auto"
+    var runReport: String?
 
     var index = 0
     while index < args.count {
@@ -143,6 +153,18 @@ private func parseExtractArgs(_ args: [String]) throws -> CLIOptions {
             guard index + 1 < args.count else { throw CLIError.missingArgument("--response-out") }
             responseOut = args[index + 1]
             index += 2
+        case "--model-mode":
+            guard index + 1 < args.count else { throw CLIError.missingArgument("--model-mode") }
+            let value = args[index + 1].lowercased()
+            guard ["auto", "guided", "legacy"].contains(value) else {
+                throw CLIError.invalidArgument("--model-mode must be one of: auto, guided, legacy.")
+            }
+            modelMode = value
+            index += 2
+        case "--run-report":
+            guard index + 1 < args.count else { throw CLIError.missingArgument("--run-report") }
+            runReport = args[index + 1]
+            index += 2
         case "--help", "-h":
             printUsage()
             exit(0)
@@ -161,7 +183,9 @@ private func parseExtractArgs(_ args: [String]) throws -> CLIOptions {
         printPrompt: printPrompt,
         responseFile: responseFile,
         responseStdin: responseStdin,
-        responseOut: responseOut
+        responseOut: responseOut,
+        modelMode: modelMode,
+        runReport: runReport
     )
 }
 

@@ -311,3 +311,49 @@ import Testing
     #expect(ticket.mixAdditional1?.code == "908414")
     #expect(ticket.mixAdditional2?.code == "902210")
 }
+
+@Test func parseExtractCommandDefaultsModelModeToAuto() throws {
+    let command = try parseCLI(arguments: [
+        "concretebot",
+        "extract",
+        "--pdf", "/tmp/input.pdf",
+        "--pages", "1-2"
+    ])
+
+    guard case let .extract(options) = command else {
+        Issue.record("Expected extract command.")
+        return
+    }
+    #expect(options.modelMode == "auto")
+    #expect(options.runReport == nil)
+}
+
+@Test func parseExtractCommandAcceptsModelModeAndRunReport() throws {
+    let command = try parseCLI(arguments: [
+        "concretebot",
+        "extract",
+        "--pdf", "/tmp/input.pdf",
+        "--pages", "auto",
+        "--model-mode", "guided",
+        "--run-report", "/tmp/run-report.json"
+    ])
+
+    guard case let .extract(options) = command else {
+        Issue.record("Expected extract command.")
+        return
+    }
+    #expect(options.modelMode == "guided")
+    #expect(options.runReport == "/tmp/run-report.json")
+}
+
+@Test func parseExtractCommandRejectsInvalidModelMode() throws {
+    #expect(throws: CLIError.self) {
+        try parseCLI(arguments: [
+            "concretebot",
+            "extract",
+            "--pdf", "/tmp/input.pdf",
+            "--pages", "1",
+            "--model-mode", "turbo"
+        ])
+    }
+}

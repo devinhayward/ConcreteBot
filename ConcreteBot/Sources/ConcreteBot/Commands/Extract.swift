@@ -12,6 +12,8 @@ enum ExtractError: Error, CustomStringConvertible {
     case pageOutOfRange(Int, Int)
     case emptyPageText(Int)
     case responseOutputFailed(String)
+    case runReportOutputFailed(String)
+    case invalidModelMode(String)
 
     var description: String {
         switch self {
@@ -35,11 +37,24 @@ enum ExtractError: Error, CustomStringConvertible {
             return "No text extracted from page \(page)."
         case .responseOutputFailed(let detail):
             return "Failed to write response output: \(detail)"
+        case .runReportOutputFailed(let detail):
+            return "Failed to write run report: \(detail)"
+        case .invalidModelMode(let mode):
+            return "Invalid model mode: \(mode). Expected auto, guided, or legacy."
         }
     }
 }
 
 enum Extract {
+    enum ModelMode: String {
+        case auto
+        case guided
+        case legacy
+    }
+
+    private static let guidedMaxAttempts = 3
+    private static let guidedRetryBackoffSeconds: TimeInterval = 0.35
+
     struct ExtractionOverrides {
         let mixText: String?
         let mixRowLines: String?
@@ -47,9 +62,64 @@ enum Extract {
         let extraChargesText: String?
     }
 
+    private struct ModelCallTelemetry: Codable {
+        let stage: String
+        let mode: String
+        let path: String
+        let status: String
+        let guidedAttempts: Int
+        let guidedErrors: [String]
+        let usedLegacyFallback: Bool
+        let durationMs: Int
+        let error: String?
+    }
+
+    private struct PageTelemetry: Codable {
+        let page: Int
+        var promptChars: Int
+        var repairPromptChars: Int?
+        var validationIssueCount: Int?
+        var repaired: Bool
+        var status: String
+        var durationMs: Int
+        var error: String?
+        var modelCalls: [ModelCallTelemetry]
+    }
+
+    private struct ExtractionRunReport: Codable {
+        let pdfPath: String
+        let modelMode: String
+        let startedAt: String
+        let finishedAt: String
+        let totalPages: Int
+        let processedPages: Int
+        let successPages: Int
+        let failedPages: Int
+        let status: String
+        let error: String?
+        let durationMs: Int
+        let pages: [PageTelemetry]
+    }
+
+    private struct ModelRunOutcome {
+        let ticket: Ticket
+        let call: ModelCallTelemetry
+    }
+
+    private struct RepairAttemptOutcome {
+        let model: ModelRunOutcome
+        let promptChars: Int
+    }
+
+    private struct ModelExecutionError: Error {
+        let underlying: Error
+        let call: ModelCallTelemetry
+    }
+
     static func run(options: CLIOptions) throws {
         let promptTemplate = try loadPromptTemplate(named: "prompt_template_compact")
         let repairPromptTemplate = try loadPromptTemplate(named: "prompt_template_repair")
+        let modelMode = try resolveModelMode(options.modelMode)
 
         let response: String
         if let responseFile = options.responseFile {
@@ -129,101 +199,312 @@ enum Extract {
         let totalPages = pageNumbers.count
         var processedPages = 0
         var totalDuration: TimeInterval = 0
-        updateProgress(current: processedPages, total: totalPages, averageSeconds: nil)
-        for pageNumber in pageNumbers {
-            let pageStart = Date()
-            let pageText = try extractPageText(document: document, pageNumber: pageNumber)
-            let condensedText = condensePageText(pageText, maxChars: 800)
-            let mixText = extractSection(
-                text: pageText,
-                startMarkers: ["MIX"],
-                endMarkers: ["INSTRUCTIONS"]
-            )
-            let mixRowLines = extractMixRowLines(mixText)
-            let mixParsedHints = buildMixParsedHints(from: mixRowLines)
-            let extraChargesText = extractSection(
-                text: pageText,
-                startMarkers: ["EXTRA CHARGES"],
-                endMarkers: ["WATER CONTENT", "MATERIAL REQUIRED"]
-            )
-            let prompt = renderPrompt(
-                template: promptTemplate,
-                pdfPath: pdfPath,
-                page: pageNumber,
-                pageText: condensedText,
-                mixText: mixText,
-                mixRowLines: mixRowLines,
-                mixParsedHints: mixParsedHints,
-                extraChargesText: extraChargesText
-            )
+        let runStart = Date()
+        var pageTelemetry: [PageTelemetry] = []
+        var runError: Error?
 
-            let ticket = try runModelTicket(prompt: prompt)
-            if let responseOut = options.responseOut {
+        updateProgress(current: processedPages, total: totalPages, averageSeconds: nil)
+        do {
+            for pageNumber in pageNumbers {
+                let pageStart = Date()
+                var pageReport = PageTelemetry(
+                    page: pageNumber,
+                    promptChars: 0,
+                    repairPromptChars: nil,
+                    validationIssueCount: nil,
+                    repaired: false,
+                    status: "success",
+                    durationMs: 0,
+                    error: nil,
+                    modelCalls: []
+                )
                 do {
-                    let serialized = encodeTicketForPrompt(ticket)
-                    try writeResponseOut(serialized, outputPath: responseOut)
+                    let pageText = try extractPageText(document: document, pageNumber: pageNumber)
+                    let condensedText = condensePageText(pageText, maxChars: 800)
+                    let mixText = extractSection(
+                        text: pageText,
+                        startMarkers: ["MIX"],
+                        endMarkers: ["INSTRUCTIONS"]
+                    )
+                    let mixRowLines = extractMixRowLines(mixText)
+                    let mixParsedHints = buildMixParsedHints(from: mixRowLines)
+                    let extraChargesText = extractSection(
+                        text: pageText,
+                        startMarkers: ["EXTRA CHARGES"],
+                        endMarkers: ["WATER CONTENT", "MATERIAL REQUIRED"]
+                    )
+                    let prompt = renderPrompt(
+                        template: promptTemplate,
+                        pdfPath: pdfPath,
+                        page: pageNumber,
+                        pageText: condensedText,
+                        mixText: mixText,
+                        mixRowLines: mixRowLines,
+                        mixParsedHints: mixParsedHints,
+                        extraChargesText: extraChargesText
+                    )
+                    pageReport.promptChars = prompt.count
+
+                    let primaryModel = try runModelTicket(
+                        prompt: prompt,
+                        modelMode: modelMode,
+                        stage: "primary"
+                    )
+                    pageReport.modelCalls.append(primaryModel.call)
+                    let ticket = primaryModel.ticket
+                    if let responseOut = options.responseOut {
+                        do {
+                            let serialized = encodeTicketForPrompt(ticket)
+                            try writeResponseOut(serialized, outputPath: responseOut)
+                        } catch {
+                            throw ExtractError.responseOutputFailed(error.localizedDescription)
+                        }
+                    }
+
+                    let hintedTicket = applyMixParsedHints(ticket: ticket, mixParsedHints: mixParsedHints)
+                    let adjustedTicket = applyMixSpecOverrides(ticket: hintedTicket, mixRowLines: mixRowLines)
+                    let mergedTicket = mergeExtraCharges(from: extraChargesText, ticket: adjustedTicket)
+                    let fallbackTicket = applyPageTextFallback(ticket: mergedTicket, pageText: pageText)
+                    let normalizedTicket = TicketNormalizer.normalize(ticket: fallbackTicket)
+                    let issues = TicketValidator.issues(ticket: normalizedTicket)
+                    let criticalIssues = issues.filter { issue in
+                        !nonCriticalPaths.contains(issue.path)
+                    }
+                    pageReport.validationIssueCount = issues.count
+                    if criticalIssues.isEmpty {
+                        try TicketValidator.validate(ticket: normalizedTicket, ignoringPaths: nonCriticalPaths)
+                        tickets.append(normalizedTicket)
+                    } else if let repair = try attemptRepair(
+                        template: repairPromptTemplate,
+                        pdfPath: pdfPath,
+                        page: pageNumber,
+                        pageText: condensedText,
+                        mixText: mixText,
+                        mixRowLines: mixRowLines,
+                        mixParsedHints: mixParsedHints,
+                        extraChargesText: extraChargesText,
+                        baseTicket: mergedTicket,
+                        issues: criticalIssues,
+                        modelMode: modelMode
+                    ) {
+                        pageReport.repairPromptChars = repair.promptChars
+                        pageReport.modelCalls.append(repair.model.call)
+                        pageReport.repaired = true
+                        let normalizedRepaired = TicketNormalizer.normalize(ticket: repair.model.ticket)
+                        try TicketValidator.validate(ticket: normalizedRepaired, ignoringPaths: nonCriticalPaths)
+                        tickets.append(normalizedRepaired)
+                    } else {
+                        throw TicketValidationError.invalidFields(criticalIssues)
+                    }
+                    processedPages += 1
+                    let elapsed = Date().timeIntervalSince(pageStart)
+                    totalDuration += elapsed
+                    pageReport.durationMs = milliseconds(from: elapsed)
+                    pageTelemetry.append(pageReport)
+                    let averageSeconds = totalDuration / Double(processedPages)
+                    updateProgress(current: processedPages, total: totalPages, averageSeconds: averageSeconds)
+                } catch let modelError as ModelExecutionError {
+                    pageReport.modelCalls.append(modelError.call)
+                    pageReport.status = "failure"
+                    pageReport.error = describeError(modelError.underlying)
+                    pageReport.durationMs = milliseconds(from: Date().timeIntervalSince(pageStart))
+                    pageTelemetry.append(pageReport)
+                    throw modelError.underlying
                 } catch {
-                    throw ExtractError.responseOutputFailed(error.localizedDescription)
+                    pageReport.status = "failure"
+                    pageReport.error = describeError(error)
+                    pageReport.durationMs = milliseconds(from: Date().timeIntervalSince(pageStart))
+                    pageTelemetry.append(pageReport)
+                    throw error
                 }
             }
-
-            let hintedTicket = applyMixParsedHints(ticket: ticket, mixParsedHints: mixParsedHints)
-            let adjustedTicket = applyMixSpecOverrides(ticket: hintedTicket, mixRowLines: mixRowLines)
-            let mergedTicket = mergeExtraCharges(from: extraChargesText, ticket: adjustedTicket)
-            let fallbackTicket = applyPageTextFallback(ticket: mergedTicket, pageText: pageText)
-            let normalizedTicket = TicketNormalizer.normalize(ticket: fallbackTicket)
-            let issues = TicketValidator.issues(ticket: normalizedTicket)
-            let criticalIssues = issues.filter { issue in
-                !nonCriticalPaths.contains(issue.path)
-            }
-            if criticalIssues.isEmpty {
-                try TicketValidator.validate(ticket: normalizedTicket, ignoringPaths: nonCriticalPaths)
-                tickets.append(normalizedTicket)
-            } else if let repairedTicket = try attemptRepair(
-                template: repairPromptTemplate,
-                pdfPath: pdfPath,
-                page: pageNumber,
-                pageText: condensedText,
-                mixText: mixText,
-                mixRowLines: mixRowLines,
-                mixParsedHints: mixParsedHints,
-                extraChargesText: extraChargesText,
-                baseTicket: mergedTicket,
-                issues: criticalIssues
-            ) {
-                let normalizedRepaired = TicketNormalizer.normalize(ticket: repairedTicket)
-                try TicketValidator.validate(ticket: normalizedRepaired, ignoringPaths: nonCriticalPaths)
-                tickets.append(normalizedRepaired)
-            } else {
-                throw TicketValidationError.invalidFields(criticalIssues)
-            }
-            processedPages += 1
-            totalDuration += Date().timeIntervalSince(pageStart)
-            let averageSeconds = totalDuration / Double(processedPages)
-            updateProgress(current: processedPages, total: totalPages, averageSeconds: averageSeconds)
+            let outputDir = expandingTilde(in: options.outputDir)
+            try FileWriter.write(tickets: tickets, outputDir: outputDir)
+        } catch {
+            runError = error
         }
         finishProgress(totalDuration: totalDuration)
 
-        let outputDir = expandingTilde(in: options.outputDir)
-        try FileWriter.write(tickets: tickets, outputDir: outputDir)
-    }
-
-    private static func runModelTicket(prompt: String) throws -> Ticket {
-        do {
-            return try FoundationalModelsClient.runTicket(prompt: prompt)
-        } catch let error as FoundationalModelsError {
-            switch error {
-            case .contextWindowExceeded, .generationFailed:
-                let response = try FoundationalModelsClient.run(prompt: prompt)
-                let jsonObjects = splitJSONObjects(from: response)
-                guard let json = jsonObjects.first else {
-                    throw ExtractError.noJSONFound
+        if let runReportPath = options.runReport {
+            let runEnd = Date()
+            let successPages = pageTelemetry.filter { $0.status == "success" }.count
+            let failedPages = pageTelemetry.count - successPages
+            let report = ExtractionRunReport(
+                pdfPath: pdfPath,
+                modelMode: modelMode.rawValue,
+                startedAt: formatReportTimestamp(runStart),
+                finishedAt: formatReportTimestamp(runEnd),
+                totalPages: totalPages,
+                processedPages: pageTelemetry.count,
+                successPages: successPages,
+                failedPages: failedPages,
+                status: runError == nil ? "success" : "failure",
+                error: runError.map(describeError),
+                durationMs: milliseconds(from: runEnd.timeIntervalSince(runStart)),
+                pages: pageTelemetry
+            )
+            do {
+                try writeRunReport(report, outputPath: expandingTilde(in: runReportPath))
+            } catch {
+                if runError == nil {
+                    throw ExtractError.runReportOutputFailed(error.localizedDescription)
                 }
-                return try TicketValidator.decode(json: json)
-            default:
-                throw error
+                let warning = "Warning: failed to write run report: \(error)\n"
+                if let data = warning.data(using: .utf8) {
+                    FileHandle.standardError.write(data)
+                }
             }
         }
+        if let runError {
+            throw runError
+        }
+    }
+
+    private static func runModelTicket(
+        prompt: String,
+        modelMode: ModelMode,
+        stage: String
+    ) throws -> ModelRunOutcome {
+        let callStart = Date()
+        var guidedAttempts = 0
+        var guidedErrors: [String] = []
+        var usedLegacyFallback = false
+
+        func makeTelemetry(
+            path: String,
+            status: String,
+            error: Error?
+        ) -> ModelCallTelemetry {
+            ModelCallTelemetry(
+                stage: stage,
+                mode: modelMode.rawValue,
+                path: path,
+                status: status,
+                guidedAttempts: guidedAttempts,
+                guidedErrors: guidedErrors,
+                usedLegacyFallback: usedLegacyFallback,
+                durationMs: milliseconds(from: Date().timeIntervalSince(callStart)),
+                error: error.map(describeError)
+            )
+        }
+
+        switch modelMode {
+        case .legacy:
+            do {
+                let ticket = try runLegacyTicket(prompt: prompt)
+                return ModelRunOutcome(
+                    ticket: ticket,
+                    call: makeTelemetry(path: "legacy", status: "success", error: nil)
+                )
+            } catch {
+                throw ModelExecutionError(
+                    underlying: error,
+                    call: makeTelemetry(path: "legacy", status: "failure", error: error)
+                )
+            }
+        case .guided, .auto:
+            while guidedAttempts < guidedMaxAttempts {
+                guidedAttempts += 1
+                do {
+                    let ticket = try FoundationalModelsClient.runTicket(prompt: prompt)
+                    return ModelRunOutcome(
+                        ticket: ticket,
+                        call: makeTelemetry(path: "guided", status: "success", error: nil)
+                    )
+                } catch let error as FoundationalModelsError {
+                    guidedErrors.append("attempt \(guidedAttempts): \(error.description)")
+                    let canRetry = guidedAttempts < guidedMaxAttempts && shouldRetryGuided(error: error)
+                    if canRetry {
+                        backoffBeforeGuidedRetry(attempt: guidedAttempts)
+                        continue
+                    }
+                    if modelMode == .auto, shouldFallbackToLegacy(error: error) {
+                        usedLegacyFallback = true
+                        do {
+                            let ticket = try runLegacyTicket(prompt: prompt)
+                            return ModelRunOutcome(
+                                ticket: ticket,
+                                call: makeTelemetry(path: "legacy", status: "success", error: nil)
+                            )
+                        } catch {
+                            throw ModelExecutionError(
+                                underlying: error,
+                                call: makeTelemetry(path: "legacy", status: "failure", error: error)
+                            )
+                        }
+                    }
+                    throw ModelExecutionError(
+                        underlying: error,
+                        call: makeTelemetry(path: "guided", status: "failure", error: error)
+                    )
+                } catch {
+                    throw ModelExecutionError(
+                        underlying: error,
+                        call: makeTelemetry(path: "guided", status: "failure", error: error)
+                    )
+                }
+            }
+            let fallbackError = FoundationalModelsError.generationFailed("Guided generation retries exhausted.")
+            throw ModelExecutionError(
+                underlying: fallbackError,
+                call: makeTelemetry(path: "guided", status: "failure", error: fallbackError)
+            )
+        }
+    }
+
+    private static func resolveModelMode(_ value: String) throws -> ModelMode {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let mode = ModelMode(rawValue: normalized) else {
+            throw ExtractError.invalidModelMode(value)
+        }
+        return mode
+    }
+
+    private static func runLegacyTicket(prompt: String) throws -> Ticket {
+        let response = try FoundationalModelsClient.run(prompt: prompt)
+        let jsonObjects = splitJSONObjects(from: response)
+        guard let json = jsonObjects.first else {
+            throw ExtractError.noJSONFound
+        }
+        return try TicketValidator.decode(json: json)
+    }
+
+    private static func shouldRetryGuided(error: FoundationalModelsError) -> Bool {
+        switch error {
+        case .contextWindowExceeded, .generationFailed, .emptyResponse:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func shouldFallbackToLegacy(error: FoundationalModelsError) -> Bool {
+        switch error {
+        case .contextWindowExceeded, .generationFailed, .emptyResponse:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func backoffBeforeGuidedRetry(attempt: Int) {
+        guard attempt > 0 else { return }
+        let seconds = guidedRetryBackoffSeconds * Double(attempt)
+        Thread.sleep(forTimeInterval: seconds)
+    }
+
+    private static func describeError(_ error: Error) -> String {
+        String(describing: error)
+    }
+
+    private static func milliseconds(from seconds: TimeInterval) -> Int {
+        Int((seconds * 1000.0).rounded())
+    }
+
+    private static func formatReportTimestamp(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
     }
 
     static func processPageForTest(
@@ -467,8 +748,9 @@ enum Extract {
         mixParsedHints: String,
         extraChargesText: String,
         baseTicket: Ticket,
-        issues: [TicketValidationIssue]
-    ) throws -> Ticket? {
+        issues: [TicketValidationIssue],
+        modelMode: ModelMode
+    ) throws -> RepairAttemptOutcome? {
         let currentJSON = encodeTicketForPrompt(baseTicket)
         let validationErrors = formatValidationErrors(issues)
         let prompt = renderRepairPrompt(
@@ -484,7 +766,12 @@ enum Extract {
             validationErrors: validationErrors
         )
 
-        return try runModelTicket(prompt: prompt)
+        let model = try runModelTicket(
+            prompt: prompt,
+            modelMode: modelMode,
+            stage: "repair"
+        )
+        return RepairAttemptOutcome(model: model, promptChars: prompt.count)
     }
 
     private static func encodeTicketForPrompt(_ ticket: Ticket) -> String {
@@ -3200,6 +3487,21 @@ enum Extract {
         let minutes = clamped / 60
         let seconds = clamped % 60
         return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    private static func writeRunReport(_ report: ExtractionRunReport, outputPath: String) throws {
+        let url = URL(fileURLWithPath: outputPath)
+        let parentDirectory = url.deletingLastPathComponent()
+        if !parentDirectory.path.isEmpty {
+            try FileManager.default.createDirectory(
+                at: parentDirectory,
+                withIntermediateDirectories: true
+            )
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(report)
+        try data.write(to: url, options: .atomic)
     }
 
     private static func writeResponseOut(_ response: String, outputPath: String) throws {

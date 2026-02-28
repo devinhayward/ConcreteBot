@@ -40,7 +40,9 @@ enum Batch {
                 printPrompt: options.printPrompt,
                 responseFile: nil,
                 responseStdin: false,
-                responseOut: nil
+                responseOut: nil,
+                modelMode: "auto",
+                runReport: nil
             )
             try Extract.run(options: extractOptions)
         }

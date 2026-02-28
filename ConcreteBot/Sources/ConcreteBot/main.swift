@@ -33,6 +33,7 @@ struct CLIOptions {
     let responseOut: String?
     let modelMode: String
     let runReport: String?
+    let promptVariant: String
 }
 
 struct BatchOptions {
@@ -42,10 +43,18 @@ struct BatchOptions {
     let printPrompt: Bool
 }
 
+struct EvaluateOptions {
+    let fixturesDir: String
+    let outputPath: String?
+    let modelModes: [String]
+    let promptVariants: [String]
+}
+
 enum CLICommand {
     case extract(CLIOptions)
     case batch(BatchOptions)
     case regress(RegressionOptions)
+    case evaluate(EvaluateOptions)
     case dumpText(DumpTextOptions)
     case promptOverrides(PromptOverridesOptions)
 }
@@ -55,9 +64,10 @@ func printUsage() {
     ConcreteBot
 
     Usage:
-      concretebot extract --pdf <path> --pages <range|auto> [--out <dir>] [--print-prompt] [--response-file <path>] [--response-stdin] [--response-out <path>] [--model-mode <auto|guided|legacy>] [--run-report <path>]
+      concretebot extract --pdf <path> --pages <range|auto> [--out <dir>] [--print-prompt] [--response-file <path>] [--response-stdin] [--response-out <path>] [--model-mode <auto|guided|legacy>] [--prompt-variant <adaptive|compact|minimal|none>] [--run-report <path>]
       concretebot batch --csv <path> [--pages <range|auto>] [--out <dir>] [--print-prompt]
       concretebot regress [--fixtures <dir>] [--out <path>]
+      concretebot evaluate [--fixtures <dir>] [--out <path>] [--model-modes <csv>] [--prompt-variants <csv>]
       concretebot dump-text --pdf <path> --pages <range> [--out <path|dir>]
       concretebot prompt-overrides --pdf <path> --pages <range> [--out <dir>]
 
@@ -71,9 +81,13 @@ func printUsage() {
       --response-stdin Read model JSON response from stdin.
       --response-out   Write raw model response to a file (extract only).
       --model-mode     Extraction model mode: auto, guided, or legacy (default: auto).
+      --prompt-variant Extraction prompt strategy: adaptive, compact, minimal, or none (default: adaptive).
       --run-report     Write per-page extraction telemetry JSON report (extract only).
       --fixtures  Path to regression fixtures directory (default: Tests/ConcreteBotTests/Fixtures).
+      --model-modes    Comma-separated evaluate modes (default: auto,guided,legacy).
+      --prompt-variants Comma-separated evaluate prompt variants (default: adaptive,compact,minimal,none).
       --out       Output path for regression report (file or directory; regress only).
+      --out       Output path for evaluation report (file or directory; evaluate only).
       --out       Output path for raw text (file or directory; dump-text only).
       --out       Output directory for prompt override files (prompt-overrides only).
     """
@@ -103,6 +117,8 @@ func parseCLI(arguments: [String]) throws -> CLICommand {
         return .batch(try parseBatchArgs(args))
     case "regress":
         return .regress(try parseRegressionArgs(args))
+    case "evaluate":
+        return .evaluate(try parseEvaluateArgs(args))
     case "dump-text":
         return .dumpText(try parseDumpTextArgs(args))
     case "prompt-overrides":
@@ -122,6 +138,7 @@ private func parseExtractArgs(_ args: [String]) throws -> CLIOptions {
     var responseOut: String?
     var modelMode = "auto"
     var runReport: String?
+    var promptVariant = "adaptive"
 
     var index = 0
     while index < args.count {
@@ -165,6 +182,16 @@ private func parseExtractArgs(_ args: [String]) throws -> CLIOptions {
             guard index + 1 < args.count else { throw CLIError.missingArgument("--run-report") }
             runReport = args[index + 1]
             index += 2
+        case "--prompt-variant":
+            guard index + 1 < args.count else { throw CLIError.missingArgument("--prompt-variant") }
+            let value = args[index + 1].lowercased()
+            guard Extract.supportedPromptVariants.contains(value) else {
+                throw CLIError.invalidArgument(
+                    "--prompt-variant must be one of: \(Extract.supportedPromptVariants.joined(separator: ", "))."
+                )
+            }
+            promptVariant = value
+            index += 2
         case "--help", "-h":
             printUsage()
             exit(0)
@@ -185,7 +212,8 @@ private func parseExtractArgs(_ args: [String]) throws -> CLIOptions {
         responseStdin: responseStdin,
         responseOut: responseOut,
         modelMode: modelMode,
-        runReport: runReport
+        runReport: runReport,
+        promptVariant: promptVariant
     )
 }
 
@@ -266,6 +294,72 @@ private func parseRegressionArgs(_ args: [String]) throws -> RegressionOptions {
         fixturesDir: fixturesDir,
         outputPath: outputPath
     )
+}
+
+private func parseEvaluateArgs(_ args: [String]) throws -> EvaluateOptions {
+    var fixturesDir = "Tests/ConcreteBotTests/Fixtures"
+    var outputPath: String?
+    var modelModes = Extract.supportedModelModes
+    var promptVariants = Extract.supportedPromptVariants
+
+    var index = 0
+    while index < args.count {
+        let arg = args[index]
+        switch arg {
+        case "--fixtures":
+            guard index + 1 < args.count else { throw CLIError.missingArgument("--fixtures") }
+            fixturesDir = args[index + 1]
+            index += 2
+        case "--out":
+            guard index + 1 < args.count else { throw CLIError.missingArgument("--out") }
+            outputPath = args[index + 1]
+            index += 2
+        case "--model-modes":
+            guard index + 1 < args.count else { throw CLIError.missingArgument("--model-modes") }
+            modelModes = try parseCSVArgumentList(args[index + 1], optionName: "--model-modes")
+            index += 2
+        case "--prompt-variants":
+            guard index + 1 < args.count else { throw CLIError.missingArgument("--prompt-variants") }
+            promptVariants = try parseCSVArgumentList(args[index + 1], optionName: "--prompt-variants")
+            index += 2
+        case "--help", "-h":
+            printUsage()
+            exit(0)
+        default:
+            throw CLIError.invalidArgument(arg)
+        }
+    }
+
+    let unsupportedModes = modelModes.filter { !Extract.supportedModelModes.contains($0) }
+    if !unsupportedModes.isEmpty {
+        throw CLIError.invalidArgument(
+            "--model-modes contains unsupported values: \(unsupportedModes.joined(separator: ", "))."
+        )
+    }
+    let unsupportedVariants = promptVariants.filter { !Extract.supportedPromptVariants.contains($0) }
+    if !unsupportedVariants.isEmpty {
+        throw CLIError.invalidArgument(
+            "--prompt-variants contains unsupported values: \(unsupportedVariants.joined(separator: ", "))."
+        )
+    }
+
+    return EvaluateOptions(
+        fixturesDir: fixturesDir,
+        outputPath: outputPath,
+        modelModes: modelModes,
+        promptVariants: promptVariants
+    )
+}
+
+private func parseCSVArgumentList(_ raw: String, optionName: String) throws -> [String] {
+    let parts = raw
+        .split(separator: ",")
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        .filter { !$0.isEmpty }
+    guard !parts.isEmpty else {
+        throw CLIError.invalidArgument("\(optionName) requires at least one value.")
+    }
+    return parts
 }
 
 private func parseDumpTextArgs(_ args: [String]) throws -> DumpTextOptions {
@@ -355,6 +449,8 @@ func run() throws {
         try Batch.run(options: options)
     case .regress(let options):
         try Regression.run(options: options)
+    case .evaluate(let options):
+        try Evaluate.run(options: options)
     case .dumpText(let options):
         try DumpText.run(options: options)
     case .promptOverrides(let options):

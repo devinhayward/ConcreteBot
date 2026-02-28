@@ -14,6 +14,7 @@ enum ExtractError: Error, CustomStringConvertible {
     case responseOutputFailed(String)
     case runReportOutputFailed(String)
     case invalidModelMode(String)
+    case invalidPromptVariant(String)
 
     var description: String {
         switch self {
@@ -41,6 +42,8 @@ enum ExtractError: Error, CustomStringConvertible {
             return "Failed to write run report: \(detail)"
         case .invalidModelMode(let mode):
             return "Invalid model mode: \(mode). Expected auto, guided, or legacy."
+        case .invalidPromptVariant(let variant):
+            return "Invalid prompt variant: \(variant). Expected adaptive, compact, minimal, or none."
         }
     }
 }
@@ -52,8 +55,18 @@ enum Extract {
         case legacy
     }
 
+    enum PromptVariant: String {
+        case adaptive
+        case compact
+        case minimal
+        case none
+    }
+
     private static let guidedMaxAttempts = 3
     private static let guidedRetryBackoffSeconds: TimeInterval = 0.35
+
+    static let supportedModelModes: [String] = ["auto", "guided", "legacy"]
+    static let supportedPromptVariants: [String] = ["adaptive", "compact", "minimal", "none"]
 
     struct ExtractionOverrides {
         let mixText: String?
@@ -76,6 +89,9 @@ enum Extract {
 
     private struct PageTelemetry: Codable {
         let page: Int
+        let configuredPromptVariant: String
+        var attemptedPromptVariants: [String]
+        var selectedPromptVariant: String?
         var promptChars: Int
         var repairPromptChars: Int?
         var validationIssueCount: Int?
@@ -89,6 +105,7 @@ enum Extract {
     private struct ExtractionRunReport: Codable {
         let pdfPath: String
         let modelMode: String
+        let promptVariant: String
         let startedAt: String
         let finishedAt: String
         let totalPages: Int
@@ -116,10 +133,20 @@ enum Extract {
         let call: ModelCallTelemetry
     }
 
+    private struct ModelCandidateEvaluation {
+        let rawTicket: Ticket
+        let mergedTicket: Ticket
+        let normalizedTicket: Ticket
+        let issues: [TicketValidationIssue]
+        let criticalIssues: [TicketValidationIssue]
+    }
+
     static func run(options: CLIOptions) throws {
-        let promptTemplate = try loadPromptTemplate(named: "prompt_template_compact")
+        let compactPromptTemplate = try loadPromptTemplate(named: "prompt_template_compact")
+        let minimalPromptTemplate = try loadPromptTemplate(named: "prompt_template_minimal")
         let repairPromptTemplate = try loadPromptTemplate(named: "prompt_template_repair")
         let modelMode = try resolveModelMode(options.modelMode)
+        let configuredPromptVariant = try resolvePromptVariant(options.promptVariant)
 
         let response: String
         if let responseFile = options.responseFile {
@@ -163,8 +190,9 @@ enum Extract {
         }
 
         if options.printPrompt {
-        for pageNumber in pageNumbers {
-            let pageText = try extractPageText(document: document, pageNumber: pageNumber)
+            let promptVariant = initialPromptVariant(for: configuredPromptVariant)
+            for pageNumber in pageNumbers {
+                let pageText = try extractPageText(document: document, pageNumber: pageNumber)
                 let condensedText = condensePageText(pageText, maxChars: 800)
                 let mixText = extractSection(
                     text: pageText,
@@ -178,8 +206,10 @@ enum Extract {
                     startMarkers: ["EXTRA CHARGES"],
                     endMarkers: ["WATER CONTENT", "MATERIAL REQUIRED"]
                 )
-                let prompt = renderPrompt(
-                    template: promptTemplate,
+                let prompt = renderExtractionPrompt(
+                    variant: promptVariant,
+                    compactTemplate: compactPromptTemplate,
+                    minimalTemplate: minimalPromptTemplate,
                     pdfPath: pdfPath,
                     page: pageNumber,
                     pageText: condensedText,
@@ -209,6 +239,9 @@ enum Extract {
                 let pageStart = Date()
                 var pageReport = PageTelemetry(
                     page: pageNumber,
+                    configuredPromptVariant: configuredPromptVariant.rawValue,
+                    attemptedPromptVariants: [],
+                    selectedPromptVariant: nil,
                     promptChars: 0,
                     repairPromptChars: nil,
                     validationIssueCount: nil,
@@ -233,8 +266,12 @@ enum Extract {
                         startMarkers: ["EXTRA CHARGES"],
                         endMarkers: ["WATER CONTENT", "MATERIAL REQUIRED"]
                     )
-                    let prompt = renderPrompt(
-                        template: promptTemplate,
+                    var currentPromptVariant = initialPromptVariant(for: configuredPromptVariant)
+                    var attemptedPromptVariants: [PromptVariant] = []
+                    var prompt = renderExtractionPrompt(
+                        variant: currentPromptVariant,
+                        compactTemplate: compactPromptTemplate,
+                        minimalTemplate: minimalPromptTemplate,
                         pdfPath: pdfPath,
                         page: pageNumber,
                         pageText: condensedText,
@@ -243,37 +280,74 @@ enum Extract {
                         mixParsedHints: mixParsedHints,
                         extraChargesText: extraChargesText
                     )
-                    pageReport.promptChars = prompt.count
 
                     let primaryModel = try runModelTicket(
                         prompt: prompt,
                         modelMode: modelMode,
                         stage: "primary"
                     )
+                    attemptedPromptVariants.append(currentPromptVariant)
                     pageReport.modelCalls.append(primaryModel.call)
-                    let ticket = primaryModel.ticket
-                    if let responseOut = options.responseOut {
-                        do {
-                            let serialized = encodeTicketForPrompt(ticket)
-                            try writeResponseOut(serialized, outputPath: responseOut)
-                        } catch {
-                            throw ExtractError.responseOutputFailed(error.localizedDescription)
-                        }
+                    var candidate = evaluateModelCandidate(
+                        rawTicket: primaryModel.ticket,
+                        mixParsedHints: mixParsedHints,
+                        mixRowLines: mixRowLines,
+                        extraChargesText: extraChargesText,
+                        pageText: pageText,
+                        nonCriticalPaths: nonCriticalPaths
+                    )
+
+                    if !candidate.criticalIssues.isEmpty,
+                       let escalationVariant = escalationVariant(for: configuredPromptVariant) {
+                        currentPromptVariant = escalationVariant
+                        prompt = renderExtractionPrompt(
+                            variant: escalationVariant,
+                            compactTemplate: compactPromptTemplate,
+                            minimalTemplate: minimalPromptTemplate,
+                            pdfPath: pdfPath,
+                            page: pageNumber,
+                            pageText: condensedText,
+                            mixText: mixText,
+                            mixRowLines: mixRowLines,
+                            mixParsedHints: mixParsedHints,
+                            extraChargesText: extraChargesText
+                        )
+                        let escalationModel = try runModelTicket(
+                            prompt: prompt,
+                            modelMode: modelMode,
+                            stage: "escalation"
+                        )
+                        attemptedPromptVariants.append(escalationVariant)
+                        pageReport.modelCalls.append(escalationModel.call)
+                        candidate = evaluateModelCandidate(
+                            rawTicket: escalationModel.ticket,
+                            mixParsedHints: mixParsedHints,
+                            mixRowLines: mixRowLines,
+                            extraChargesText: extraChargesText,
+                            pageText: pageText,
+                            nonCriticalPaths: nonCriticalPaths
+                        )
                     }
 
-                    let hintedTicket = applyMixParsedHints(ticket: ticket, mixParsedHints: mixParsedHints)
-                    let adjustedTicket = applyMixSpecOverrides(ticket: hintedTicket, mixRowLines: mixRowLines)
-                    let mergedTicket = mergeExtraCharges(from: extraChargesText, ticket: adjustedTicket)
-                    let fallbackTicket = applyPageTextFallback(ticket: mergedTicket, pageText: pageText)
-                    let normalizedTicket = TicketNormalizer.normalize(ticket: fallbackTicket)
-                    let issues = TicketValidator.issues(ticket: normalizedTicket)
-                    let criticalIssues = issues.filter { issue in
-                        !nonCriticalPaths.contains(issue.path)
-                    }
-                    pageReport.validationIssueCount = issues.count
-                    if criticalIssues.isEmpty {
-                        try TicketValidator.validate(ticket: normalizedTicket, ignoringPaths: nonCriticalPaths)
-                        tickets.append(normalizedTicket)
+                    pageReport.attemptedPromptVariants = attemptedPromptVariants.map(\.rawValue)
+                    pageReport.selectedPromptVariant = currentPromptVariant.rawValue
+                    pageReport.promptChars = prompt.count
+                    pageReport.validationIssueCount = candidate.issues.count
+
+                    if candidate.criticalIssues.isEmpty {
+                        try TicketValidator.validate(
+                            ticket: candidate.normalizedTicket,
+                            ignoringPaths: nonCriticalPaths
+                        )
+                        if let responseOut = options.responseOut {
+                            do {
+                                let serialized = encodeTicketForPrompt(candidate.rawTicket)
+                                try writeResponseOut(serialized, outputPath: responseOut)
+                            } catch {
+                                throw ExtractError.responseOutputFailed(error.localizedDescription)
+                            }
+                        }
+                        tickets.append(candidate.normalizedTicket)
                     } else if let repair = try attemptRepair(
                         template: repairPromptTemplate,
                         pdfPath: pdfPath,
@@ -283,8 +357,8 @@ enum Extract {
                         mixRowLines: mixRowLines,
                         mixParsedHints: mixParsedHints,
                         extraChargesText: extraChargesText,
-                        baseTicket: mergedTicket,
-                        issues: criticalIssues,
+                        baseTicket: candidate.mergedTicket,
+                        issues: candidate.criticalIssues,
                         modelMode: modelMode
                     ) {
                         pageReport.repairPromptChars = repair.promptChars
@@ -292,9 +366,17 @@ enum Extract {
                         pageReport.repaired = true
                         let normalizedRepaired = TicketNormalizer.normalize(ticket: repair.model.ticket)
                         try TicketValidator.validate(ticket: normalizedRepaired, ignoringPaths: nonCriticalPaths)
+                        if let responseOut = options.responseOut {
+                            do {
+                                let serialized = encodeTicketForPrompt(repair.model.ticket)
+                                try writeResponseOut(serialized, outputPath: responseOut)
+                            } catch {
+                                throw ExtractError.responseOutputFailed(error.localizedDescription)
+                            }
+                        }
                         tickets.append(normalizedRepaired)
                     } else {
-                        throw TicketValidationError.invalidFields(criticalIssues)
+                        throw TicketValidationError.invalidFields(candidate.criticalIssues)
                     }
                     processedPages += 1
                     let elapsed = Date().timeIntervalSince(pageStart)
@@ -332,6 +414,7 @@ enum Extract {
             let report = ExtractionRunReport(
                 pdfPath: pdfPath,
                 modelMode: modelMode.rawValue,
+                promptVariant: configuredPromptVariant.rawValue,
                 startedAt: formatReportTimestamp(runStart),
                 finishedAt: formatReportTimestamp(runEnd),
                 totalPages: totalPages,
@@ -460,6 +543,32 @@ enum Extract {
         return mode
     }
 
+    private static func resolvePromptVariant(_ value: String) throws -> PromptVariant {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let variant = PromptVariant(rawValue: normalized) else {
+            throw ExtractError.invalidPromptVariant(value)
+        }
+        return variant
+    }
+
+    private static func initialPromptVariant(for configured: PromptVariant) -> PromptVariant {
+        switch configured {
+        case .adaptive:
+            return .minimal
+        case .compact, .minimal, .none:
+            return configured
+        }
+    }
+
+    private static func escalationVariant(for configured: PromptVariant) -> PromptVariant? {
+        switch configured {
+        case .adaptive, .minimal, .none:
+            return .compact
+        case .compact:
+            return nil
+        }
+    }
+
     private static func runLegacyTicket(prompt: String) throws -> Ticket {
         let response = try FoundationalModelsClient.run(prompt: prompt)
         let jsonObjects = splitJSONObjects(from: response)
@@ -574,6 +683,65 @@ enum Extract {
         return tickets
     }
 
+    static func estimatePromptCharsForTest(
+        pageText: String,
+        pdfPath: String = "fixture.pdf",
+        page: Int = 1,
+        promptVariant: String,
+        overrides: ExtractionOverrides? = nil
+    ) throws -> Int {
+        let normalizedPageText = normalizePageText(pageText)
+        var mixText = trimmedNonEmpty(overrides?.mixText)
+        var mixRowLines = trimmedNonEmpty(overrides?.mixRowLines)
+        var mixParsedHints = trimmedNonEmpty(overrides?.mixParsedHints)
+        var extraChargesText = trimmedNonEmpty(overrides?.extraChargesText)
+
+        if mixText == nil {
+            let extracted = extractSection(
+                text: normalizedPageText,
+                startMarkers: ["MIX"],
+                endMarkers: ["INSTRUCTIONS"]
+            )
+            mixText = trimmedNonEmpty(extracted)
+        }
+        if mixRowLines == nil {
+            mixRowLines = trimmedNonEmpty(extractMixRowLines(mixText ?? ""))
+        }
+        if let hints = mixParsedHints, !hasMeaningfulMixParsedHints(hints) {
+            mixParsedHints = nil
+        }
+        if mixParsedHints == nil {
+            mixParsedHints = trimmedNonEmpty(buildMixParsedHints(from: mixRowLines ?? ""))
+        }
+        if extraChargesText == nil {
+            let extracted = extractSection(
+                text: normalizedPageText,
+                startMarkers: ["EXTRA CHARGES"],
+                endMarkers: ["WATER CONTENT", "MATERIAL REQUIRED"]
+            )
+            extraChargesText = trimmedNonEmpty(extracted)
+        }
+
+        let compactTemplate = try loadPromptTemplate(named: "prompt_template_compact")
+        let minimalTemplate = try loadPromptTemplate(named: "prompt_template_minimal")
+        let variant = try resolvePromptVariant(promptVariant)
+        let effectiveVariant = initialPromptVariant(for: variant)
+        let condensedText = condensePageText(normalizedPageText, maxChars: 800)
+        let prompt = renderExtractionPrompt(
+            variant: effectiveVariant,
+            compactTemplate: compactTemplate,
+            minimalTemplate: minimalTemplate,
+            pdfPath: pdfPath,
+            page: page,
+            pageText: condensedText,
+            mixText: mixText ?? "",
+            mixRowLines: mixRowLines ?? "",
+            mixParsedHints: mixParsedHints ?? "",
+            extraChargesText: extraChargesText ?? ""
+        )
+        return prompt.count
+    }
+
     static func buildOverrides(from pageText: String) -> ExtractionOverrides {
         let normalizedPageText = normalizePageText(pageText)
         let mixText = extractSection(
@@ -613,6 +781,53 @@ enum Extract {
         var mixRowLines: String
         var mixParsedHints: String
         var extraChargesText: String
+    }
+
+    private static func renderExtractionPrompt(
+        variant: PromptVariant,
+        compactTemplate: String,
+        minimalTemplate: String,
+        pdfPath: String,
+        page: Int,
+        pageText: String,
+        mixText: String,
+        mixRowLines: String,
+        mixParsedHints: String,
+        extraChargesText: String
+    ) -> String {
+        switch variant {
+        case .adaptive, .minimal:
+            return renderPrompt(
+                template: minimalTemplate,
+                pdfPath: pdfPath,
+                page: page,
+                pageText: pageText,
+                mixText: mixText,
+                mixRowLines: mixRowLines,
+                mixParsedHints: mixParsedHints,
+                extraChargesText: extraChargesText
+            )
+        case .compact:
+            return renderPrompt(
+                template: compactTemplate,
+                pdfPath: pdfPath,
+                page: page,
+                pageText: pageText,
+                mixText: mixText,
+                mixRowLines: mixRowLines,
+                mixParsedHints: mixParsedHints,
+                extraChargesText: extraChargesText
+            )
+        case .none:
+            return renderNoTemplatePrompt(
+                pdfPath: pdfPath,
+                page: page,
+                pageText: pageText,
+                mixRowLines: mixRowLines,
+                mixParsedHints: mixParsedHints,
+                extraChargesText: extraChargesText
+            )
+        }
     }
 
     private static func renderPrompt(
@@ -670,6 +885,40 @@ enum Extract {
         }
 
         return rendered
+    }
+
+    private static func renderNoTemplatePrompt(
+        pdfPath: String,
+        page: Int,
+        pageText: String,
+        mixRowLines: String,
+        mixParsedHints: String,
+        extraChargesText: String
+    ) -> String {
+        let fileName = URL(fileURLWithPath: pdfPath).lastPathComponent
+        let sectionLimit = 900
+        let extraLimit = 1800
+        let condensedExtraCharges = condenseExtraChargesText(extraChargesText)
+        let lines: [String] = [
+            "FILE: \(fileName) PAGE: \(page)",
+            "Return one JSON object ticket with keys:",
+            "Ticket No., Delivery Date, Delivery Time, Delivery Address, Mix Customer, Mix Additional 1, Mix Additional 2, Extra Charges.",
+            "Use null when missing. Do not infer values.",
+            "",
+            "PDF_TEXT:",
+            truncateSection(pageText, maxChars: sectionLimit),
+            "",
+            "MIX_ROW_LINES:",
+            truncateSection(mixRowLines, maxChars: sectionLimit),
+            "",
+            "MIX_PARSED_HINTS:",
+            truncateSection(mixParsedHints, maxChars: sectionLimit),
+            "",
+            "EXTRA_CHARGES_TEXT:",
+            truncateSection(condensedExtraCharges, maxChars: extraLimit)
+        ]
+        let rendered = lines.joined(separator: "\n")
+        return truncateSection(rendered, maxChars: 6200)
     }
 
     private static func renderRepairPrompt(
@@ -772,6 +1021,32 @@ enum Extract {
             stage: "repair"
         )
         return RepairAttemptOutcome(model: model, promptChars: prompt.count)
+    }
+
+    private static func evaluateModelCandidate(
+        rawTicket: Ticket,
+        mixParsedHints: String,
+        mixRowLines: String,
+        extraChargesText: String,
+        pageText: String,
+        nonCriticalPaths: Set<String>
+    ) -> ModelCandidateEvaluation {
+        let hintedTicket = applyMixParsedHints(ticket: rawTicket, mixParsedHints: mixParsedHints)
+        let adjustedTicket = applyMixSpecOverrides(ticket: hintedTicket, mixRowLines: mixRowLines)
+        let mergedTicket = mergeExtraCharges(from: extraChargesText, ticket: adjustedTicket)
+        let fallbackTicket = applyPageTextFallback(ticket: mergedTicket, pageText: pageText)
+        let normalizedTicket = TicketNormalizer.normalize(ticket: fallbackTicket)
+        let issues = TicketValidator.issues(ticket: normalizedTicket)
+        let criticalIssues = issues.filter { issue in
+            !nonCriticalPaths.contains(issue.path)
+        }
+        return ModelCandidateEvaluation(
+            rawTicket: rawTicket,
+            mergedTicket: mergedTicket,
+            normalizedTicket: normalizedTicket,
+            issues: issues,
+            criticalIssues: criticalIssues
+        )
     }
 
     private static func encodeTicketForPrompt(_ ticket: Ticket) -> String {

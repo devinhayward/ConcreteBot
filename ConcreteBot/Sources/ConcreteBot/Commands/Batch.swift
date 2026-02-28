@@ -42,7 +42,8 @@ enum Batch {
                 responseStdin: false,
                 responseOut: nil,
                 modelMode: "auto",
-                runReport: nil
+                runReport: nil,
+                promptVariant: "adaptive"
             )
             try Extract.run(options: extractOptions)
         }

@@ -1,0 +1,30 @@
+CONCRETE TICKET EXTRACTION (MINIMAL)
+SOURCE
+- File: <<FILE_NAME>>
+- Page: <<PAGE_NUMBER>>
+
+Return one JSON object only.
+Use null when a value is missing.
+Do not infer values.
+
+Required keys:
+- Ticket No.
+- Delivery Date
+- Delivery Time
+- Delivery Address
+- Mix Customer (Qty, Cust. Descr., Description, Code, Slump)
+- Mix Additional 1 (null or mix row object)
+- Mix Additional 2 (null or mix row object)
+- Extra Charges (array of Description + Qty)
+
+PDF TEXT:
+<<PDF_TEXT>>
+
+MIX ROW LINES:
+<<MIX_ROW_LINES>>
+
+MIX PARSED HINTS:
+<<MIX_PARSED_HINTS>>
+
+EXTRA CHARGES TEXT:
+<<EXTRA_CHARGES_TEXT>>

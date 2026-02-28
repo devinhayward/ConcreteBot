@@ -14,6 +14,11 @@ swift run ConcreteBot extract --pdf /path/to/tickets.pdf --pages 2-23 --out /pat
 
 ConcreteBot reads each page in the range and sends it to the system model for extraction. Output files are written as `ticket-<Ticket No.>.json` in the `--out` directory.
 
+Phase 4 extraction options:
+- `--model-mode auto|guided|legacy`
+- `--prompt-variant adaptive|compact|minimal|none` (default `adaptive`: starts minimal and escalates to compact before repair when needed)
+- `--run-report /path/to/report.json` (per-page telemetry)
+
 ## Manual workflow
 
 1. Print prompts (one per page) and run them in any model UI:
@@ -40,3 +45,12 @@ pdf,pages
 /path/to/ticket-2.pdf
 
 example - swift run ConcreteBot batch --csv /path/to/csvfile.csv --pages auto --out /path/to/out directory
+
+Evaluation matrix (fixtures):
+```
+swift run ConcreteBot evaluate --fixtures Tests/ConcreteBotTests/Fixtures
+```
+Optional filters:
+- `--model-modes auto,guided,legacy`
+- `--prompt-variants adaptive,compact,minimal,none`
+- `--out /path/to/evaluate_report.txt`

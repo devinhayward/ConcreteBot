@@ -325,6 +325,7 @@ import Testing
         return
     }
     #expect(options.modelMode == "auto")
+    #expect(options.promptVariant == "adaptive")
     #expect(options.runReport == nil)
 }
 
@@ -335,6 +336,7 @@ import Testing
         "--pdf", "/tmp/input.pdf",
         "--pages", "auto",
         "--model-mode", "guided",
+        "--prompt-variant", "minimal",
         "--run-report", "/tmp/run-report.json"
     ])
 
@@ -343,6 +345,7 @@ import Testing
         return
     }
     #expect(options.modelMode == "guided")
+    #expect(options.promptVariant == "minimal")
     #expect(options.runReport == "/tmp/run-report.json")
 }
 
@@ -354,6 +357,44 @@ import Testing
             "--pdf", "/tmp/input.pdf",
             "--pages", "1",
             "--model-mode", "turbo"
+        ])
+    }
+}
+
+@Test func parseExtractCommandRejectsInvalidPromptVariant() throws {
+    #expect(throws: CLIError.self) {
+        try parseCLI(arguments: [
+            "concretebot",
+            "extract",
+            "--pdf", "/tmp/input.pdf",
+            "--pages", "1",
+            "--prompt-variant", "maximal"
+        ])
+    }
+}
+
+@Test func parseEvaluateCommandAcceptsModeAndPromptLists() throws {
+    let command = try parseCLI(arguments: [
+        "concretebot",
+        "evaluate",
+        "--model-modes", "guided,legacy",
+        "--prompt-variants", "compact,minimal"
+    ])
+
+    guard case let .evaluate(options) = command else {
+        Issue.record("Expected evaluate command.")
+        return
+    }
+    #expect(options.modelModes == ["guided", "legacy"])
+    #expect(options.promptVariants == ["compact", "minimal"])
+}
+
+@Test func parseEvaluateCommandRejectsUnsupportedModes() throws {
+    #expect(throws: CLIError.self) {
+        try parseCLI(arguments: [
+            "concretebot",
+            "evaluate",
+            "--model-modes", "guided,unknown"
         ])
     }
 }

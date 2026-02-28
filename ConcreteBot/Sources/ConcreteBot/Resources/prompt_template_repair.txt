@@ -1,31 +1,40 @@
 CONCRETE TICKET DATA REPAIR
-You are correcting specific fields in a previously extracted ticket.
-Use ONLY the text blocks provided. Do not infer or guess.
+SOURCE
+- File: <<FILE_NAME>>
+- Page: <<PAGE_NUMBER>>
 
-CURRENT JSON (do not rewrite unless correcting fields):
+TASK
+Repair a previously extracted ticket.
+Use CURRENT JSON as the baseline, correct the listed VALIDATION ERRORS, and return one full corrected ticket JSON object.
+Use ONLY the text blocks below.
+Do not infer missing values.
+Return JSON only (no markdown or commentary).
+
+CURRENT JSON
 <<CURRENT_JSON>>
 
-VALIDATION ERRORS (fix only these fields):
+VALIDATION ERRORS (priority)
 <<VALIDATION_ERRORS>>
 
-RETURN FORMAT (STRICT)
-Return ONLY a JSON object containing ONLY the corrected fields.
-- Use the exact field names from CURRENT JSON.
-- For nested fields, include a nested object with only corrected keys.
-- If correcting Extra Charges, return the full corrected "Extra Charges" array.
-- Use null if a field is missing on the page.
-- Do not include fields that are not listed in VALIDATION ERRORS.
-No commentary. No markdown. No trailing commas.
+REQUIRED JSON SHAPE (single object)
+- Ticket No.
+- Delivery Date
+- Delivery Time
+- Delivery Address
+- Mix Customer: Qty, Cust. Descr., Description, Code, Slump
+- Mix Additional 1: null OR same keys as Mix Customer
+- Mix Additional 2: null OR same keys as Mix Customer
+- Extra Charges: array of objects with Description and Qty
 
-MIX RULES
-- Use ONLY MIX ROW LINES for Mix fields.
-- Row 1 -> Mix Customer, Row 2 -> Mix Additional 1, Row 3 -> Mix Additional 2.
-- If a mix row is missing, its object must be null.
-- Slump must only come from the mix row.
-
-EXTRA CHARGES RULES
-- Use ONLY EXTRA CHARGES TEXT.
-- Do not add, remove, reorder, or combine charges.
+RULES
+- Keep non-errored fields unchanged unless a correction is necessary for consistency.
+- Use null when a field is missing.
+- Mix fields must come only from MIX ROW LINES and MIX PARSED HINTS.
+- Row mapping: Row 1 -> Mix Customer, Row 2 -> Mix Additional 1, Row 3 -> Mix Additional 2.
+- If only one mix row exists, Mix Additional 1 and Mix Additional 2 must be null.
+- Slump must come from mix rows only.
+- Extra charges must come only from EXTRA CHARGES TEXT.
+- Keep each extra-charge row separate; do not add, remove, merge, or reorder.
 
 PDF TEXT (filtered for key fields):
 <<PDF_TEXT>>

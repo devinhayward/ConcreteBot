@@ -48,8 +48,7 @@ enum Extract {
     }
 
     static func run(options: CLIOptions) throws {
-        let promptTemplate = try loadPromptTemplate(named: "prompt_template")
-        let compactPromptTemplate = try loadPromptTemplate(named: "prompt_template_compact")
+        let promptTemplate = try loadPromptTemplate(named: "prompt_template_compact")
         let repairPromptTemplate = try loadPromptTemplate(named: "prompt_template_repair")
 
         let response: String
@@ -111,7 +110,6 @@ enum Extract {
                 )
                 let prompt = renderPrompt(
                     template: promptTemplate,
-                    compactTemplate: compactPromptTemplate,
                     pdfPath: pdfPath,
                     page: pageNumber,
                     pageText: condensedText,
@@ -150,7 +148,6 @@ enum Extract {
             )
             let prompt = renderPrompt(
                 template: promptTemplate,
-                compactTemplate: compactPromptTemplate,
                 pdfPath: pdfPath,
                 page: pageNumber,
                 pageText: condensedText,
@@ -160,54 +157,45 @@ enum Extract {
                 extraChargesText: extraChargesText
             )
 
-            let modelResponse = try FoundationalModelsClient.run(prompt: prompt)
+            let ticket = try runModelTicket(prompt: prompt)
             if let responseOut = options.responseOut {
                 do {
-                    try writeResponseOut(modelResponse, outputPath: responseOut)
+                    let serialized = encodeTicketForPrompt(ticket)
+                    try writeResponseOut(serialized, outputPath: responseOut)
                 } catch {
                     throw ExtractError.responseOutputFailed(error.localizedDescription)
                 }
             }
-            let jsonObjects = splitJSONObjects(from: modelResponse)
-            guard !jsonObjects.isEmpty else {
-                throw ExtractError.noJSONFound
+
+            let hintedTicket = applyMixParsedHints(ticket: ticket, mixParsedHints: mixParsedHints)
+            let adjustedTicket = applyMixSpecOverrides(ticket: hintedTicket, mixRowLines: mixRowLines)
+            let mergedTicket = mergeExtraCharges(from: extraChargesText, ticket: adjustedTicket)
+            let fallbackTicket = applyPageTextFallback(ticket: mergedTicket, pageText: pageText)
+            let normalizedTicket = TicketNormalizer.normalize(ticket: fallbackTicket)
+            let issues = TicketValidator.issues(ticket: normalizedTicket)
+            let criticalIssues = issues.filter { issue in
+                !nonCriticalPaths.contains(issue.path)
             }
-
-            for json in jsonObjects {
-                let ticket = try TicketValidator.decode(json: json)
-                let hintedTicket = applyMixParsedHints(ticket: ticket, mixParsedHints: mixParsedHints)
-                let adjustedTicket = applyMixSpecOverrides(ticket: hintedTicket, mixRowLines: mixRowLines)
-                let mergedTicket = mergeExtraCharges(from: extraChargesText, ticket: adjustedTicket)
-                let fallbackTicket = applyPageTextFallback(ticket: mergedTicket, pageText: pageText)
-                let normalizedTicket = TicketNormalizer.normalize(ticket: fallbackTicket)
-                let issues = TicketValidator.issues(ticket: normalizedTicket)
-                let criticalIssues = issues.filter { issue in
-                    !nonCriticalPaths.contains(issue.path)
-                }
-                if criticalIssues.isEmpty {
-                    try TicketValidator.validate(ticket: normalizedTicket, ignoringPaths: nonCriticalPaths)
-                    tickets.append(normalizedTicket)
-                    continue
-                }
-
-                if let repairedTicket = try attemptRepair(
-                    template: repairPromptTemplate,
-                    pdfPath: pdfPath,
-                    page: pageNumber,
-                    pageText: condensedText,
-                    mixText: mixText,
-                    mixRowLines: mixRowLines,
-                    mixParsedHints: mixParsedHints,
-                    extraChargesText: extraChargesText,
-                    baseTicket: mergedTicket,
-                    issues: criticalIssues
-                ) {
-                    let normalizedRepaired = TicketNormalizer.normalize(ticket: repairedTicket)
-                    try TicketValidator.validate(ticket: normalizedRepaired, ignoringPaths: nonCriticalPaths)
-                    tickets.append(normalizedRepaired)
-                } else {
-                    throw TicketValidationError.invalidFields(criticalIssues)
-                }
+            if criticalIssues.isEmpty {
+                try TicketValidator.validate(ticket: normalizedTicket, ignoringPaths: nonCriticalPaths)
+                tickets.append(normalizedTicket)
+            } else if let repairedTicket = try attemptRepair(
+                template: repairPromptTemplate,
+                pdfPath: pdfPath,
+                page: pageNumber,
+                pageText: condensedText,
+                mixText: mixText,
+                mixRowLines: mixRowLines,
+                mixParsedHints: mixParsedHints,
+                extraChargesText: extraChargesText,
+                baseTicket: mergedTicket,
+                issues: criticalIssues
+            ) {
+                let normalizedRepaired = TicketNormalizer.normalize(ticket: repairedTicket)
+                try TicketValidator.validate(ticket: normalizedRepaired, ignoringPaths: nonCriticalPaths)
+                tickets.append(normalizedRepaired)
+            } else {
+                throw TicketValidationError.invalidFields(criticalIssues)
             }
             processedPages += 1
             totalDuration += Date().timeIntervalSince(pageStart)
@@ -218,6 +206,24 @@ enum Extract {
 
         let outputDir = expandingTilde(in: options.outputDir)
         try FileWriter.write(tickets: tickets, outputDir: outputDir)
+    }
+
+    private static func runModelTicket(prompt: String) throws -> Ticket {
+        do {
+            return try FoundationalModelsClient.runTicket(prompt: prompt)
+        } catch let error as FoundationalModelsError {
+            switch error {
+            case .contextWindowExceeded, .generationFailed:
+                let response = try FoundationalModelsClient.run(prompt: prompt)
+                let jsonObjects = splitJSONObjects(from: response)
+                guard let json = jsonObjects.first else {
+                    throw ExtractError.noJSONFound
+                }
+                return try TicketValidator.decode(json: json)
+            default:
+                throw error
+            }
+        }
     }
 
     static func processPageForTest(
@@ -330,7 +336,6 @@ enum Extract {
 
     private static func renderPrompt(
         template: String,
-        compactTemplate: String,
         pdfPath: String,
         page: Int,
         pageText: String,
@@ -340,19 +345,19 @@ enum Extract {
         extraChargesText: String
     ) -> String {
         let fileName = URL(fileURLWithPath: pdfPath).lastPathComponent
-        let maxSectionChars = 800
-        let maxExtraChargesChars = 2400
+        let maxSectionChars = 700
+        let maxExtraChargesChars = 1800
         let condensedExtraChargesText = condenseExtraChargesText(extraChargesText)
-        let baseSections = PromptSections(
+        var sections = PromptSections(
             pageText: truncateSection(pageText, maxChars: maxSectionChars),
             mixText: truncateSection(mixText, maxChars: maxSectionChars),
             mixRowLines: truncateSection(mixRowLines, maxChars: maxSectionChars),
             mixParsedHints: truncateSection(mixParsedHints, maxChars: maxSectionChars),
             extraChargesText: truncateSection(condensedExtraChargesText, maxChars: maxExtraChargesChars)
         )
-        let maxPromptChars = 9000
+        let maxPromptChars = 6200
 
-        func buildPrompt(template: String, sections: PromptSections) -> String {
+        func buildPrompt(_ sections: PromptSections) -> String {
             var rendered = template
             rendered = rendered.replacingOccurrences(of: "<<FILE_NAME>>", with: fileName)
             rendered = rendered.replacingOccurrences(of: "<<PAGE_NUMBER>>", with: String(page))
@@ -364,57 +369,26 @@ enum Extract {
             return rendered
         }
 
-        func renderWithTemplate(
-            _ template: String,
-            sections: PromptSections,
-            minPageText: Int,
-            minMixText: Int,
-            minExtraCharges: Int
-        ) -> String {
-            var sections = sections
-            var rendered = buildPrompt(template: template, sections: sections)
-            if rendered.count <= maxPromptChars {
-                return rendered
-            }
+        var rendered = buildPrompt(sections)
+        if rendered.count > maxPromptChars {
             var overage = rendered.count - maxPromptChars
-            shrinkSection(&sections.mixText, overage: &overage, minChars: minMixText)
-            shrinkSection(&sections.pageText, overage: &overage, minChars: minPageText)
-            shrinkSection(&sections.extraChargesText, overage: &overage, minChars: minExtraCharges)
-            rendered = buildPrompt(template: template, sections: sections)
-            return rendered
+            shrinkSection(&sections.mixParsedHints, overage: &overage, minChars: 120)
+            shrinkSection(&sections.mixRowLines, overage: &overage, minChars: 180)
+            shrinkSection(&sections.mixText, overage: &overage, minChars: 120)
+            shrinkSection(&sections.pageText, overage: &overage, minChars: 220)
+            shrinkSection(&sections.extraChargesText, overage: &overage, minChars: 450)
+            rendered = buildPrompt(sections)
+        }
+        if rendered.count > maxPromptChars {
+            sections.mixText = ""
+            sections.mixParsedHints = truncateSection(sections.mixParsedHints, maxChars: 200)
+            sections.mixRowLines = truncateSection(sections.mixRowLines, maxChars: 300)
+            sections.pageText = truncateSection(sections.pageText, maxChars: 350)
+            sections.extraChargesText = truncateSection(sections.extraChargesText, maxChars: 700)
+            rendered = buildPrompt(sections)
         }
 
-        let fullRendered = renderWithTemplate(
-            template,
-            sections: baseSections,
-            minPageText: 400,
-            minMixText: 200,
-            minExtraCharges: 600
-        )
-        if fullRendered.count <= maxPromptChars {
-            return fullRendered
-        }
-
-        var compactRendered = renderWithTemplate(
-            compactTemplate,
-            sections: baseSections,
-            minPageText: 300,
-            minMixText: 0,
-            minExtraCharges: 800
-        )
-        if compactRendered.count > maxPromptChars {
-            var tighterSections = baseSections
-            tighterSections.mixText = ""
-            compactRendered = renderWithTemplate(
-                compactTemplate,
-                sections: tighterSections,
-                minPageText: 200,
-                minMixText: 0,
-                minExtraCharges: 600
-            )
-        }
-
-        return compactRendered
+        return rendered
     }
 
     private static func renderRepairPrompt(
@@ -430,19 +404,19 @@ enum Extract {
         validationErrors: String
     ) -> String {
         let fileName = URL(fileURLWithPath: pdfPath).lastPathComponent
-        let maxSectionChars = 800
-        let maxExtraChargesChars = 2400
+        let maxSectionChars = 650
+        let maxExtraChargesChars = 1600
         let condensedExtraChargesText = condenseExtraChargesText(extraChargesText)
-        let baseSections = PromptSections(
+        var sections = PromptSections(
             pageText: truncateSection(pageText, maxChars: maxSectionChars),
             mixText: truncateSection(mixText, maxChars: maxSectionChars),
             mixRowLines: truncateSection(mixRowLines, maxChars: maxSectionChars),
             mixParsedHints: truncateSection(mixParsedHints, maxChars: maxSectionChars),
             extraChargesText: truncateSection(condensedExtraChargesText, maxChars: maxExtraChargesChars)
         )
-        let maxPromptChars = 9000
+        let maxPromptChars = 6400
 
-        func buildPrompt(sections: PromptSections, currentJSON: String, validationErrors: String) -> String {
+        func buildPrompt(_ sections: PromptSections, _ currentJSON: String, _ validationErrors: String) -> String {
             var rendered = template
             rendered = rendered.replacingOccurrences(of: "<<FILE_NAME>>", with: fileName)
             rendered = rendered.replacingOccurrences(of: "<<PAGE_NUMBER>>", with: String(page))
@@ -456,25 +430,24 @@ enum Extract {
             return rendered
         }
 
-        var sections = baseSections
-        var rendered = buildPrompt(
-            sections: sections,
-            currentJSON: currentJSON,
-            validationErrors: validationErrors
-        )
-        if rendered.count <= maxPromptChars {
-            return rendered
+        var rendered = buildPrompt(sections, currentJSON, validationErrors)
+        if rendered.count > maxPromptChars {
+            var overage = rendered.count - maxPromptChars
+            shrinkSection(&sections.mixParsedHints, overage: &overage, minChars: 120)
+            shrinkSection(&sections.mixRowLines, overage: &overage, minChars: 180)
+            shrinkSection(&sections.mixText, overage: &overage, minChars: 120)
+            shrinkSection(&sections.pageText, overage: &overage, minChars: 200)
+            shrinkSection(&sections.extraChargesText, overage: &overage, minChars: 450)
+            rendered = buildPrompt(sections, currentJSON, validationErrors)
         }
-
-        var overage = rendered.count - maxPromptChars
-        shrinkSection(&sections.mixText, overage: &overage, minChars: 200)
-        shrinkSection(&sections.pageText, overage: &overage, minChars: 300)
-        shrinkSection(&sections.extraChargesText, overage: &overage, minChars: 600)
-        rendered = buildPrompt(
-            sections: sections,
-            currentJSON: currentJSON,
-            validationErrors: validationErrors
-        )
+        if rendered.count > maxPromptChars {
+            sections.mixText = ""
+            sections.mixParsedHints = truncateSection(sections.mixParsedHints, maxChars: 200)
+            sections.mixRowLines = truncateSection(sections.mixRowLines, maxChars: 300)
+            sections.pageText = truncateSection(sections.pageText, maxChars: 320)
+            sections.extraChargesText = truncateSection(sections.extraChargesText, maxChars: 650)
+            rendered = buildPrompt(sections, currentJSON, validationErrors)
+        }
         return rendered
     }
 
@@ -511,12 +484,7 @@ enum Extract {
             validationErrors: validationErrors
         )
 
-        let response = try FoundationalModelsClient.run(prompt: prompt)
-        let jsonObjects = splitJSONObjects(from: response)
-        guard let repairJSON = jsonObjects.first else {
-            throw ExtractError.invalidResponse("No JSON object found in repair response.")
-        }
-        return try applyRepairPatch(baseTicket: baseTicket, patchJSON: repairJSON)
+        return try runModelTicket(prompt: prompt)
     }
 
     private static func encodeTicketForPrompt(_ ticket: Ticket) -> String {
@@ -534,50 +502,6 @@ enum Extract {
             return "None"
         }
         return issues.map { "- \($0.path): \($0.message)" }.joined(separator: "\n")
-    }
-
-    private static func applyRepairPatch(baseTicket: Ticket, patchJSON: String) throws -> Ticket {
-        let baseDict = try ticketDictionary(from: baseTicket)
-        let patchObject = try jsonObject(from: patchJSON)
-        guard let patchDict = patchObject as? [String: Any] else {
-            throw ExtractError.invalidResponse("Repair response must be a JSON object.")
-        }
-        let merged = mergeDictionaries(baseDict, patchDict)
-        let data = try JSONSerialization.data(withJSONObject: merged, options: [])
-        guard let json = String(data: data, encoding: .utf8) else {
-            throw ExtractError.invalidResponse("Failed to encode repaired JSON.")
-        }
-        return try TicketValidator.decode(json: json)
-    }
-
-    private static func ticketDictionary(from ticket: Ticket) throws -> [String: Any] {
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(ticket)
-        let object = try JSONSerialization.jsonObject(with: data, options: [])
-        guard let dict = object as? [String: Any] else {
-            throw ExtractError.invalidResponse("Failed to convert ticket to JSON dictionary.")
-        }
-        return dict
-    }
-
-    private static func jsonObject(from text: String) throws -> Any {
-        guard let data = text.data(using: .utf8) else {
-            throw ExtractError.invalidResponse("Repair response is not valid UTF-8.")
-        }
-        return try JSONSerialization.jsonObject(with: data, options: [])
-    }
-
-    private static func mergeDictionaries(_ base: [String: Any], _ patch: [String: Any]) -> [String: Any] {
-        var result = base
-        for (key, patchValue) in patch {
-            if let patchDict = patchValue as? [String: Any],
-               let baseDict = result[key] as? [String: Any] {
-                result[key] = mergeDictionaries(baseDict, patchDict)
-            } else {
-                result[key] = patchValue
-            }
-        }
-        return result
     }
 
     private static func shrinkSection(_ text: inout String, overage: inout Int, minChars: Int) {

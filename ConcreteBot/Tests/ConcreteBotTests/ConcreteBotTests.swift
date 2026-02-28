@@ -181,7 +181,7 @@ import Testing
     #expect(normalized.mixCustomer.description == "STANDARD 40MPA NA 20MM HR")
 }
 
-@Test func normalizesMissingStandardInDescription() {
+@Test func keepsDescriptionWithoutStandardWhenCustomerHasStandardPrefix() {
     let ticket = Ticket(
         ticketNumber: "81530465",
         deliveryDate: "Thu, Oct 2 2025",
@@ -202,7 +202,7 @@ import Testing
     let normalized = TicketNormalizer.normalize(ticket: ticket)
 
     #expect(normalized.mixCustomer.customerDescription == "STANDARD 40MPA NA 20MM HR")
-    #expect(normalized.mixCustomer.description == "STANDARD 40MPA NA 20MM HR")
+    #expect(normalized.mixCustomer.description == "40MPA NA 20MM HR")
 }
 
 @Test func normalizesSlumpWhenItMatchesExtraChargeQty() {

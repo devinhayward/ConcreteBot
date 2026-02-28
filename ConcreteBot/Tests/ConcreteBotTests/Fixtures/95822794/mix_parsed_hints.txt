@@ -1,0 +1,5 @@
+Row 1:
+Qty: 6.00 m3
+Code: RMXQ405C11X
+Slump: 60+-10
+Spec: SHOTCRETE 40MPA F2 14MM

@@ -3,7 +3,8 @@ import Foundation
 enum TicketNormalizer {
     static func normalize(ticket: Ticket) -> Ticket {
         let normalizedExtraCharges = ticket.extraCharges.map { normalize(extraCharge: $0) }
-        let orderedExtraCharges = reorderExtraCharges(normalizedExtraCharges)
+        let dedupedExtraCharges = dedupeExtraCharges(normalizedExtraCharges)
+        let orderedExtraCharges = reorderExtraCharges(dedupedExtraCharges)
         let extraChargeQtys = Set(
             orderedExtraCharges
                 .compactMap { $0.qty?.trimmedNonEmpty }
@@ -112,8 +113,20 @@ enum TicketNormalizer {
            let remainder = remainder.trimmedNonEmpty {
             return ExtraCharge(description: remainder, qty: qty)
         }
+        if let (number, remainder) = splitLeadingNumber(from: trimmed),
+           let qtyNumeric,
+           isUnityQuantity(qtyNumeric),
+           let remainder = remainder.trimmedNonEmpty {
+            // OCR sometimes emits Qty=1 and prefixes the real qty onto description (e.g. "6.00 FLEX ...").
+            return ExtraCharge(description: remainder, qty: number)
+        }
 
         return extraCharge
+    }
+
+    private static func isUnityQuantity(_ value: String) -> Bool {
+        guard let numeric = Double(value) else { return false }
+        return abs(numeric - 1.0) < 0.000_001
     }
 
     private static func splitLeadingNumber(from value: String) -> (number: String, remainder: String)? {
@@ -255,6 +268,12 @@ enum TicketNormalizer {
             }
         } else if normalizedCustomer == nil {
             normalizedCustomer = best
+        }
+
+        if let normalizedDescription,
+           isLikelyMixSpec(normalizedDescription),
+           !isLikelyMixSpec(normalizedCustomer) {
+            normalizedCustomer = normalizedDescription
         }
 
         return MixRow(
@@ -471,12 +490,76 @@ enum TicketNormalizer {
         normalized = collapseRepeatedSpecSequence(normalized)
         normalized = mergeSplitWordTokens(normalized)
         normalized = moveCorInhToEnd(normalized)
+        normalized = moveShotcreteToEnd(normalized)
+        normalized = normalizeAttachedUnitTokenCasing(normalized)
         normalized = normalized.replacingOccurrences(
             of: #"\s{2,}"#,
             with: " ",
             options: .regularExpression
         )
         return normalized.trimmedNonEmpty
+    }
+
+    private static func normalizeAttachedUnitTokenCasing(_ value: String) -> String {
+        var normalized = value
+        let patterns: [(String, String)] = [
+            (#"(\d+(?:\.\d+)?)[mM][mM]\b"#, "$1MM"),
+            (#"(\d+(?:\.\d+)?)[mM][pP][aA]\b"#, "$1MPA")
+        ]
+        for (pattern, replacement) in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern) {
+                let range = NSRange(normalized.startIndex..., in: normalized)
+                normalized = regex.stringByReplacingMatches(
+                    in: normalized,
+                    options: [],
+                    range: range,
+                    withTemplate: replacement
+                )
+            }
+        }
+        return normalized
+    }
+
+    private static func moveShotcreteToEnd(_ value: String) -> String {
+        let tokens = value.split(whereSeparator: { $0.isWhitespace })
+        guard tokens.count > 1 else { return value }
+
+        var regular: [Substring] = []
+        var shotcrete: [Substring] = []
+        var hasCoreToken = false
+
+        for token in tokens {
+            let normalized = normalizeSpecToken(String(token))
+            if normalized == "SHOTCRETE" {
+                shotcrete.append(token)
+            } else {
+                regular.append(token)
+                if isCoreSpecToken(normalized) {
+                    hasCoreToken = true
+                }
+            }
+        }
+
+        guard !shotcrete.isEmpty, !regular.isEmpty, hasCoreToken else { return value }
+        // Keep a single SHOTCRETE marker even if OCR/model output duplicates it.
+        return (regular + [shotcrete[0]]).joined(separator: " ")
+    }
+
+    private static func isLikelyMixSpec(_ value: String?) -> Bool {
+        guard let value = value?.trimmedNonEmpty?.uppercased() else { return false }
+        if value.contains("MPA") || value.contains("MM") {
+            return true
+        }
+        if value.contains("SHOTCRETE") || value.contains("WEATHER") || value.contains("STANDARD") {
+            return true
+        }
+        if value.contains("GROUT") {
+            return true
+        }
+        if value.range(of: #"\bC\d+\b"#, options: .regularExpression) != nil {
+            return true
+        }
+        return false
     }
 
     private static func defaultSlump(for code: String?) -> String? {
@@ -928,6 +1011,29 @@ enum TicketNormalizer {
             }
         }
         return regular + siteWash
+    }
+
+    private static func dedupeExtraCharges(_ charges: [ExtraCharge]) -> [ExtraCharge] {
+        guard charges.count > 1 else { return charges }
+        var seen = Set<String>()
+        var deduped: [ExtraCharge] = []
+        for charge in charges {
+            let key = extraChargeDedupKey(charge)
+            if seen.insert(key).inserted {
+                deduped.append(charge)
+            }
+        }
+        return deduped
+    }
+
+    private static func extraChargeDedupKey(_ charge: ExtraCharge) -> String {
+        let qty = charge.qty?.trimmedNonEmpty ?? ""
+        let description = charge.description?.trimmedNonEmpty ?? ""
+        let normalizedDescription = description
+            .uppercased()
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        return "\(qty)|\(normalizedDescription)"
     }
 
     private static func isSiteWashCharge(_ description: String?) -> Bool {

@@ -231,6 +231,119 @@ import Testing
     #expect(normalized.mixCustomer.slump == nil)
 }
 
+@Test func normalizesShotcreteSpecAndPromotesDescriptionOverCustomerName() {
+    let ticket = Ticket(
+        ticketNumber: "95822767",
+        deliveryDate: "Mon, May 5 2025",
+        deliveryTime: "07:42",
+        deliveryAddress: "330 Mill Road, Toronto, ON M9C 1Y8",
+        mixCustomer: MixRow(
+            qty: "8.00 m³",
+            customerDescription: "BMR RENTAL LIMITED",
+            description: "SHOTCRETE 40MPA F2 14MM",
+            code: "RMXQ405C11X",
+            slump: "60+-10"
+        ),
+        mixAdditional1: nil,
+        mixAdditional2: nil,
+        extraCharges: [
+            ExtraCharge(description: "TOARC FEE (M3)", qty: "8.00")
+        ]
+    )
+
+    let normalized = TicketNormalizer.normalize(ticket: ticket)
+
+    #expect(normalized.mixCustomer.customerDescription == "40MPA F2 14MM SHOTCRETE")
+    #expect(normalized.mixCustomer.description == "40MPA F2 14MM SHOTCRETE")
+}
+
+@Test func normalizesMixSpecUnitCasingInCustomerDescription() {
+    let ticket = Ticket(
+        ticketNumber: "95822773",
+        deliveryDate: "Mon, May 5 2025",
+        deliveryTime: "08:27",
+        deliveryAddress: "330 Mill Road, Toronto, ON M9C 1Y8",
+        mixCustomer: MixRow(
+            qty: "8.00 m³",
+            customerDescription: "40MPA F2 14mm SHOTCRETE",
+            description: "40MPA F2 14MM SHOTCRETE",
+            code: "RMXQ405C11X",
+            slump: "60+-10"
+        ),
+        mixAdditional1: nil,
+        mixAdditional2: nil,
+        extraCharges: []
+    )
+
+    let normalized = TicketNormalizer.normalize(ticket: ticket)
+
+    #expect(normalized.mixCustomer.customerDescription == "40MPA F2 14MM SHOTCRETE")
+    #expect(normalized.mixCustomer.description == "40MPA F2 14MM SHOTCRETE")
+}
+
+@Test func dedupesRepeatedShotcreteToken() {
+    let ticket = Ticket(
+        ticketNumber: "95822779",
+        deliveryDate: "Mon, May 5 2025",
+        deliveryTime: "09:37",
+        deliveryAddress: "330 Mill Road, Toronto, ON M9C 1Y8",
+        mixCustomer: MixRow(
+            qty: "8.00 m³",
+            customerDescription: "40MPA F2 14MM SHOTCRETE SHOTCRETE",
+            description: "40MPA F2 14MM SHOTCRETE SHOTCRETE",
+            code: "RMXQ405C11X",
+            slump: "60+-10"
+        ),
+        mixAdditional1: nil,
+        mixAdditional2: nil,
+        extraCharges: []
+    )
+
+    let normalized = TicketNormalizer.normalize(ticket: ticket)
+
+    #expect(normalized.mixCustomer.customerDescription == "40MPA F2 14MM SHOTCRETE")
+    #expect(normalized.mixCustomer.description == "40MPA F2 14MM SHOTCRETE")
+}
+
+@Test func normalizesAndDedupesNoisyExtraCharges() {
+    let ticket = Ticket(
+        ticketNumber: "95822794",
+        deliveryDate: "Mon, May 5 2025",
+        deliveryTime: "12:00",
+        deliveryAddress: "330 Mill Road, Toronto, ON M9C 1Y8",
+        mixCustomer: MixRow(
+            qty: "6.00 m³",
+            customerDescription: "40MPA F2 14MM SHOTCRETE",
+            description: "40MPA F2 14MM SHOTCRETE",
+            code: "RMXQ405C11X",
+            slump: "60+-10"
+        ),
+        mixAdditional1: nil,
+        mixAdditional2: nil,
+        extraCharges: [
+            ExtraCharge(description: "6.00 FLEX FUEL FEE 1-INN", qty: "1"),
+            ExtraCharge(description: "6.00 ENVIRONMENTAL/ENVIRONNEMENT", qty: "1"),
+            ExtraCharge(description: "6.00 TOARC FEE (M3)", qty: "1"),
+            ExtraCharge(description: "FLEX FUEL FEE 1-INN", qty: "6.00"),
+            ExtraCharge(description: "ENVIRONMENTAL/ENVIRONNEMENT", qty: "6.00"),
+            ExtraCharge(description: "TOARC FEE (M3)", qty: "6.00"),
+            ExtraCharge(description: "6.00 SITE WASH WATER MANAGEMENT FEE", qty: "1")
+        ]
+    )
+
+    let normalized = TicketNormalizer.normalize(ticket: ticket)
+
+    #expect(normalized.extraCharges.count == 4)
+    #expect(normalized.extraCharges[0].description == "FLEX FUEL FEE 1-INN")
+    #expect(normalized.extraCharges[0].qty == "6.00")
+    #expect(normalized.extraCharges[1].description == "ENVIRONMENTAL/ENVIRONNEMENT")
+    #expect(normalized.extraCharges[1].qty == "6.00")
+    #expect(normalized.extraCharges[2].description == "TOARC FEE (M3)")
+    #expect(normalized.extraCharges[2].qty == "6.00")
+    #expect(normalized.extraCharges[3].description == "SITE WASH WATER MANAGEMENT FEE")
+    #expect(normalized.extraCharges[3].qty == "6.00")
+}
+
 @Test func normalizesTicketWithAdditionalMixRow() throws {
     let json = """
     {

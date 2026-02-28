@@ -1,0 +1,33 @@
+{
+  "Ticket No.": "95822767",
+  "Delivery Date": "Mon, May 5 2025",
+  "Delivery Time": "07:42",
+  "Delivery Address": "330 Mill Road, Toronto, ON M9C 1Y8",
+  "Mix Customer": {
+    "Qty": "8.00 m³",
+    "Cust. Descr.": "BMR RENTAL LIMITED",
+    "Description": "SHOTCRETE 40MPA F2 14MM",
+    "Code": "RMXQ405C11X",
+    "Slump": "60+-10"
+  },
+  "Mix Additional 1": null,
+  "Mix Additional 2": null,
+  "Extra Charges": [
+    {
+      "Description": "TOARC FEE (M3)",
+      "Qty": "8.00"
+    },
+    {
+      "Description": "ENVIRONMENTAL/ENVIRONNEMENT",
+      "Qty": "8.00"
+    },
+    {
+      "Description": "FLEX FUEL FEE 1-INN",
+      "Qty": "8.00"
+    },
+    {
+      "Description": "SITE WASH WATER MANAGEMENT FEE",
+      "Qty": "8.00"
+    }
+  ]
+}

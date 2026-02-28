@@ -7,9 +7,11 @@ enum ExtractError: Error, CustomStringConvertible {
     case invalidResponse(String)
     case missingResponseInput
     case invalidPageRange(String)
+    case autoPageSelectionFailed(String)
     case pdfLoadFailed(String)
     case pageOutOfRange(Int, Int)
     case emptyPageText(Int)
+    case responseOutputFailed(String)
 
     var description: String {
         switch self {
@@ -23,12 +25,16 @@ enum ExtractError: Error, CustomStringConvertible {
             return "No response input provided. Use --response-file or --response-stdin."
         case .invalidPageRange(let detail):
             return "Invalid page range: \(detail)"
+        case .autoPageSelectionFailed(let detail):
+            return "Auto page selection failed: \(detail)"
         case .pdfLoadFailed(let detail):
             return "Failed to load PDF: \(detail)"
         case .pageOutOfRange(let page, let total):
             return "Page \(page) is out of range (1-\(total))."
         case .emptyPageText(let page):
             return "No text extracted from page \(page)."
+        case .responseOutputFailed(let detail):
+            return "Failed to write response output: \(detail)"
         }
     }
 }
@@ -37,6 +43,7 @@ enum Extract {
     static func run(options: CLIOptions) throws {
         let promptTemplate = try loadPromptTemplate(named: "prompt_template")
         let compactPromptTemplate = try loadPromptTemplate(named: "prompt_template_compact")
+        let repairPromptTemplate = try loadPromptTemplate(named: "prompt_template_repair")
 
         let response: String
         if let responseFile = options.responseFile {
@@ -54,11 +61,12 @@ enum Extract {
                 throw ExtractError.noJSONFound
             }
 
+            let nonCriticalPaths: Set<String> = ["Delivery Date", "Delivery Time"]
             var tickets: [Ticket] = []
             for json in jsonObjects {
                 let ticket = try TicketValidator.decode(json: json)
                 let normalizedTicket = TicketNormalizer.normalize(ticket: ticket)
-                try TicketValidator.validate(ticket: normalizedTicket)
+                try TicketValidator.validate(ticket: normalizedTicket, ignoringPaths: nonCriticalPaths)
                 tickets.append(normalizedTicket)
             }
 
@@ -67,19 +75,20 @@ enum Extract {
             return
         }
 
+        let pdfPath = expandingTilde(in: options.pdfPath)
+        guard let document = PDFDocument(url: URL(fileURLWithPath: pdfPath)) else {
+            throw ExtractError.pdfLoadFailed(pdfPath)
+        }
         let pageNumbers: [Int]
         do {
-            pageNumbers = try PageRange.parse(options.pages)
+            pageNumbers = try resolvePageNumbers(pages: options.pages, document: document, pdfPath: pdfPath)
         } catch let error as PageRangeError {
             throw ExtractError.invalidPageRange(error.description)
         }
-        guard let document = PDFDocument(url: URL(fileURLWithPath: options.pdfPath)) else {
-            throw ExtractError.pdfLoadFailed(options.pdfPath)
-        }
 
         if options.printPrompt {
-            for pageNumber in pageNumbers {
-                let pageText = try extractPageText(document: document, pageNumber: pageNumber)
+        for pageNumber in pageNumbers {
+            let pageText = try extractPageText(document: document, pageNumber: pageNumber)
                 let condensedText = condensePageText(pageText, maxChars: 800)
                 let mixText = extractSection(
                     text: pageText,
@@ -96,7 +105,7 @@ enum Extract {
                 let prompt = renderPrompt(
                     template: promptTemplate,
                     compactTemplate: compactPromptTemplate,
-                    pdfPath: options.pdfPath,
+                    pdfPath: pdfPath,
                     page: pageNumber,
                     pageText: condensedText,
                     mixText: mixText,
@@ -110,6 +119,7 @@ enum Extract {
             return
         }
 
+        let nonCriticalPaths: Set<String> = ["Delivery Date", "Delivery Time"]
         var tickets: [Ticket] = []
         let totalPages = pageNumbers.count
         var processedPages = 0
@@ -134,7 +144,7 @@ enum Extract {
             let prompt = renderPrompt(
                 template: promptTemplate,
                 compactTemplate: compactPromptTemplate,
-                pdfPath: options.pdfPath,
+                pdfPath: pdfPath,
                 page: pageNumber,
                 pageText: condensedText,
                 mixText: mixText,
@@ -144,6 +154,13 @@ enum Extract {
             )
 
             let modelResponse = try FoundationalModelsClient.run(prompt: prompt)
+            if let responseOut = options.responseOut {
+                do {
+                    try writeResponseOut(modelResponse, outputPath: responseOut)
+                } catch {
+                    throw ExtractError.responseOutputFailed(error.localizedDescription)
+                }
+            }
             let jsonObjects = splitJSONObjects(from: modelResponse)
             guard !jsonObjects.isEmpty else {
                 throw ExtractError.noJSONFound
@@ -154,8 +171,34 @@ enum Extract {
                 let hintedTicket = applyMixParsedHints(ticket: ticket, mixParsedHints: mixParsedHints)
                 let mergedTicket = mergeExtraCharges(from: extraChargesText, ticket: hintedTicket)
                 let normalizedTicket = TicketNormalizer.normalize(ticket: mergedTicket)
-                try TicketValidator.validate(ticket: normalizedTicket)
-                tickets.append(normalizedTicket)
+                let issues = TicketValidator.issues(ticket: normalizedTicket)
+                let criticalIssues = issues.filter { issue in
+                    !nonCriticalPaths.contains(issue.path)
+                }
+                if criticalIssues.isEmpty {
+                    try TicketValidator.validate(ticket: normalizedTicket, ignoringPaths: nonCriticalPaths)
+                    tickets.append(normalizedTicket)
+                    continue
+                }
+
+                if let repairedTicket = try attemptRepair(
+                    template: repairPromptTemplate,
+                    pdfPath: pdfPath,
+                    page: pageNumber,
+                    pageText: condensedText,
+                    mixText: mixText,
+                    mixRowLines: mixRowLines,
+                    mixParsedHints: mixParsedHints,
+                    extraChargesText: extraChargesText,
+                    baseTicket: mergedTicket,
+                    issues: criticalIssues
+                ) {
+                    let normalizedRepaired = TicketNormalizer.normalize(ticket: repairedTicket)
+                    try TicketValidator.validate(ticket: normalizedRepaired, ignoringPaths: nonCriticalPaths)
+                    tickets.append(normalizedRepaired)
+                } else {
+                    throw TicketValidationError.invalidFields(criticalIssues)
+                }
             }
             processedPages += 1
             totalDuration += Date().timeIntervalSince(pageStart)
@@ -166,6 +209,43 @@ enum Extract {
 
         let outputDir = expandingTilde(in: options.outputDir)
         try FileWriter.write(tickets: tickets, outputDir: outputDir)
+    }
+
+    static func processPageForTest(
+        pageText: String,
+        pdfPath: String = "fixture.pdf",
+        page: Int = 1,
+        modelResponse: String
+    ) throws -> [Ticket] {
+        let normalizedPageText = normalizePageText(pageText)
+        let mixText = extractSection(
+            text: normalizedPageText,
+            startMarkers: ["MIX"],
+            endMarkers: ["INSTRUCTIONS"]
+        )
+        let mixRowLines = extractMixRowLines(mixText)
+        let mixParsedHints = buildMixParsedHints(from: mixRowLines)
+        let extraChargesText = extractSection(
+            text: normalizedPageText,
+            startMarkers: ["EXTRA CHARGES"],
+            endMarkers: ["WATER CONTENT", "MATERIAL REQUIRED"]
+        )
+
+        let jsonObjects = splitJSONObjects(from: modelResponse)
+        guard !jsonObjects.isEmpty else {
+            throw ExtractError.noJSONFound
+        }
+
+        var tickets: [Ticket] = []
+        for json in jsonObjects {
+            let ticket = try TicketValidator.decode(json: json)
+            let hintedTicket = applyMixParsedHints(ticket: ticket, mixParsedHints: mixParsedHints)
+            let mergedTicket = mergeExtraCharges(from: extraChargesText, ticket: hintedTicket)
+            let normalizedTicket = TicketNormalizer.normalize(ticket: mergedTicket)
+            try TicketValidator.validate(ticket: normalizedTicket)
+            tickets.append(normalizedTicket)
+        }
+        return tickets
     }
 
     private static func loadPromptTemplate(named name: String) throws -> String {
@@ -275,10 +355,167 @@ enum Extract {
         return compactRendered
     }
 
+    private static func renderRepairPrompt(
+        template: String,
+        pdfPath: String,
+        page: Int,
+        pageText: String,
+        mixText: String,
+        mixRowLines: String,
+        mixParsedHints: String,
+        extraChargesText: String,
+        currentJSON: String,
+        validationErrors: String
+    ) -> String {
+        let fileName = URL(fileURLWithPath: pdfPath).lastPathComponent
+        let maxSectionChars = 800
+        let maxExtraChargesChars = 2400
+        let condensedExtraChargesText = condenseExtraChargesText(extraChargesText)
+        let baseSections = PromptSections(
+            pageText: truncateSection(pageText, maxChars: maxSectionChars),
+            mixText: truncateSection(mixText, maxChars: maxSectionChars),
+            mixRowLines: truncateSection(mixRowLines, maxChars: maxSectionChars),
+            mixParsedHints: truncateSection(mixParsedHints, maxChars: maxSectionChars),
+            extraChargesText: truncateSection(condensedExtraChargesText, maxChars: maxExtraChargesChars)
+        )
+        let maxPromptChars = 9000
+
+        func buildPrompt(sections: PromptSections, currentJSON: String, validationErrors: String) -> String {
+            var rendered = template
+            rendered = rendered.replacingOccurrences(of: "<<FILE_NAME>>", with: fileName)
+            rendered = rendered.replacingOccurrences(of: "<<PAGE_NUMBER>>", with: String(page))
+            rendered = rendered.replacingOccurrences(of: "<<PDF_TEXT>>", with: sections.pageText)
+            rendered = rendered.replacingOccurrences(of: "<<MIX_TEXT>>", with: sections.mixText)
+            rendered = rendered.replacingOccurrences(of: "<<MIX_ROW_LINES>>", with: sections.mixRowLines)
+            rendered = rendered.replacingOccurrences(of: "<<MIX_PARSED_HINTS>>", with: sections.mixParsedHints)
+            rendered = rendered.replacingOccurrences(of: "<<EXTRA_CHARGES_TEXT>>", with: sections.extraChargesText)
+            rendered = rendered.replacingOccurrences(of: "<<CURRENT_JSON>>", with: currentJSON)
+            rendered = rendered.replacingOccurrences(of: "<<VALIDATION_ERRORS>>", with: validationErrors)
+            return rendered
+        }
+
+        var sections = baseSections
+        var rendered = buildPrompt(
+            sections: sections,
+            currentJSON: currentJSON,
+            validationErrors: validationErrors
+        )
+        if rendered.count <= maxPromptChars {
+            return rendered
+        }
+
+        var overage = rendered.count - maxPromptChars
+        shrinkSection(&sections.mixText, overage: &overage, minChars: 200)
+        shrinkSection(&sections.pageText, overage: &overage, minChars: 300)
+        shrinkSection(&sections.extraChargesText, overage: &overage, minChars: 600)
+        rendered = buildPrompt(
+            sections: sections,
+            currentJSON: currentJSON,
+            validationErrors: validationErrors
+        )
+        return rendered
+    }
+
     private static func truncateSection(_ text: String, maxChars: Int) -> String {
         guard maxChars > 0 else { return "" }
         guard text.count > maxChars else { return text }
         return truncateToBoundary(text, limit: maxChars)
+    }
+
+    private static func attemptRepair(
+        template: String,
+        pdfPath: String,
+        page: Int,
+        pageText: String,
+        mixText: String,
+        mixRowLines: String,
+        mixParsedHints: String,
+        extraChargesText: String,
+        baseTicket: Ticket,
+        issues: [TicketValidationIssue]
+    ) throws -> Ticket? {
+        let currentJSON = encodeTicketForPrompt(baseTicket)
+        let validationErrors = formatValidationErrors(issues)
+        let prompt = renderRepairPrompt(
+            template: template,
+            pdfPath: pdfPath,
+            page: page,
+            pageText: pageText,
+            mixText: mixText,
+            mixRowLines: mixRowLines,
+            mixParsedHints: mixParsedHints,
+            extraChargesText: extraChargesText,
+            currentJSON: currentJSON,
+            validationErrors: validationErrors
+        )
+
+        let response = try FoundationalModelsClient.run(prompt: prompt)
+        let jsonObjects = splitJSONObjects(from: response)
+        guard let repairJSON = jsonObjects.first else {
+            throw ExtractError.invalidResponse("No JSON object found in repair response.")
+        }
+        return try applyRepairPatch(baseTicket: baseTicket, patchJSON: repairJSON)
+    }
+
+    private static func encodeTicketForPrompt(_ ticket: Ticket) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted]
+        guard let data = try? encoder.encode(ticket),
+              let json = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+        return json
+    }
+
+    private static func formatValidationErrors(_ issues: [TicketValidationIssue]) -> String {
+        if issues.isEmpty {
+            return "None"
+        }
+        return issues.map { "- \($0.path): \($0.message)" }.joined(separator: "\n")
+    }
+
+    private static func applyRepairPatch(baseTicket: Ticket, patchJSON: String) throws -> Ticket {
+        let baseDict = try ticketDictionary(from: baseTicket)
+        let patchObject = try jsonObject(from: patchJSON)
+        guard let patchDict = patchObject as? [String: Any] else {
+            throw ExtractError.invalidResponse("Repair response must be a JSON object.")
+        }
+        let merged = mergeDictionaries(baseDict, patchDict)
+        let data = try JSONSerialization.data(withJSONObject: merged, options: [])
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw ExtractError.invalidResponse("Failed to encode repaired JSON.")
+        }
+        return try TicketValidator.decode(json: json)
+    }
+
+    private static func ticketDictionary(from ticket: Ticket) throws -> [String: Any] {
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(ticket)
+        let object = try JSONSerialization.jsonObject(with: data, options: [])
+        guard let dict = object as? [String: Any] else {
+            throw ExtractError.invalidResponse("Failed to convert ticket to JSON dictionary.")
+        }
+        return dict
+    }
+
+    private static func jsonObject(from text: String) throws -> Any {
+        guard let data = text.data(using: .utf8) else {
+            throw ExtractError.invalidResponse("Repair response is not valid UTF-8.")
+        }
+        return try JSONSerialization.jsonObject(with: data, options: [])
+    }
+
+    private static func mergeDictionaries(_ base: [String: Any], _ patch: [String: Any]) -> [String: Any] {
+        var result = base
+        for (key, patchValue) in patch {
+            if let patchDict = patchValue as? [String: Any],
+               let baseDict = result[key] as? [String: Any] {
+                result[key] = mergeDictionaries(baseDict, patchDict)
+            } else {
+                result[key] = patchValue
+            }
+        }
+        return result
     }
 
     private static func shrinkSection(_ text: inout String, overage: inout Int, minChars: Int) {
@@ -583,6 +820,99 @@ enum Extract {
         return results
     }
 
+    private static func resolvePageNumbers(
+        pages: String,
+        document: PDFDocument,
+        pdfPath: String
+    ) throws -> [Int] {
+        let trimmed = pages.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed.lowercased()
+        if normalized == "auto" {
+            return try autoSelectPages(document: document, pdfPath: pdfPath)
+        }
+        return try PageRange.parse(trimmed)
+    }
+
+    private static func autoSelectPages(
+        document: PDFDocument,
+        pdfPath: String
+    ) throws -> [Int] {
+        let pageCount = document.pageCount
+        var scored: [(page: Int, score: Int)] = []
+        var pagesWithText: [Int] = []
+
+        for index in 0..<pageCount {
+            guard let page = document.page(at: index) else { continue }
+            let text = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !text.isEmpty else { continue }
+            let pageNumber = index + 1
+            pagesWithText.append(pageNumber)
+            let score = scorePageText(text)
+            if score > 0 {
+                scored.append((page: pageNumber, score: score))
+            }
+        }
+
+        guard !pagesWithText.isEmpty else {
+            throw ExtractError.autoPageSelectionFailed("No text found in PDF: \(pdfPath)")
+        }
+
+        guard let maxScore = scored.map({ $0.score }).max() else {
+            return pagesWithText
+        }
+
+        let threshold = max(3, maxScore - 2)
+        let selected = scored.filter { $0.score >= threshold }.map { $0.page }
+        return selected.isEmpty ? pagesWithText : selected
+    }
+
+    private static func scorePageText(_ text: String) -> Int {
+        let upper = text.uppercased()
+        let ticketMarkers = [
+            "TICKET NO",
+            "TICKET NUMBER",
+            "TICKET #"
+        ]
+        let deliveryMarkers = [
+            "DELIVERY DATE",
+            "DELIVERY TIME",
+            "DELIVERY ADDR",
+            "DELIVERY ADDRESS",
+            "JOBSITE",
+            "CUSTOMER",
+            "ORDER NO",
+            "ORDER #"
+        ]
+        let mixMarkers = [
+            "MIX",
+            "SLUMP",
+            "MPA",
+            "EXTRA CHARGES",
+            "PLANT NO"
+        ]
+
+        var score = 0
+        if containsAny(upper, markers: ticketMarkers) {
+            score += 4
+        }
+        for marker in deliveryMarkers where upper.contains(marker) {
+            score += 1
+        }
+        for marker in mixMarkers where upper.contains(marker) {
+            score += 1
+        }
+        return score
+    }
+
+    private static func containsAny(_ text: String, markers: [String]) -> Bool {
+        for marker in markers {
+            if text.contains(marker) {
+                return true
+            }
+        }
+        return false
+    }
+
     private static func extractPageText(document: PDFDocument, pageNumber: Int) throws -> String {
         let pageCount = document.pageCount
         guard pageNumber >= 1 && pageNumber <= pageCount else {
@@ -595,14 +925,109 @@ enum Extract {
         if text.isEmpty {
             throw ExtractError.emptyPageText(pageNumber)
         }
-        return text
+        return normalizePageText(text)
     }
 
-    private static func expandingTilde(in path: String) -> String {
+    static func expandingTilde(in path: String) -> String {
         if path.hasPrefix("~") {
             return (path as NSString).expandingTildeInPath
         }
         return path
+    }
+
+    private static func normalizePageText(_ text: String) -> String {
+        let normalizedLineBreaks = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let lines = normalizedLineBreaks.split(separator: "\n", omittingEmptySubsequences: false)
+        let normalizedLines = lines.map { normalizeLine(String($0)) }
+        return normalizedLines.joined(separator: "\n")
+    }
+
+    private static func normalizeLine(_ line: String) -> String {
+        var cleaned = line.replacingOccurrences(of: "\t", with: " ")
+        cleaned = normalizeDecimalDots(in: cleaned)
+        let trimmed = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let tokens = trimmed.split(whereSeparator: { $0.isWhitespace })
+        let normalizedTokens = tokens.map { normalizeToken(String($0)) }
+        return normalizedTokens.joined(separator: " ")
+    }
+
+    private static func normalizeDecimalDots(in text: String) -> String {
+        let pattern = #"(\\d)\\s*\\.(?:\\s*\\.)+(\\d)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return text
+        }
+        let range = NSRange(text.startIndex..., in: text)
+        return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "$1.$2")
+    }
+
+    private static func normalizeToken(_ token: String) -> String {
+        guard shouldCollapseDuplicatedLetters(token) else { return token }
+        return collapseDuplicateRuns(token)
+    }
+
+    private static func shouldCollapseDuplicatedLetters(_ token: String) -> Bool {
+        guard !token.isEmpty else { return false }
+        let letterSet = CharacterSet.letters
+        guard token.rangeOfCharacter(from: letterSet.inverted) == nil else {
+            return false
+        }
+        let chars = Array(token)
+        if hasRun(of: 3, in: chars) {
+            return true
+        }
+        let pairCount = chars.count / 2
+        guard pairCount >= 3 else { return false }
+        var matchingPairs = 0
+        for index in stride(from: 0, to: pairCount * 2, by: 2) {
+            let left = String(chars[index]).uppercased()
+            let right = String(chars[index + 1]).uppercased()
+            if left == right {
+                matchingPairs += 1
+            }
+        }
+        return matchingPairs >= pairCount - 1
+    }
+
+    private static func hasRun(of length: Int, in chars: [Character]) -> Bool {
+        guard length > 1 else { return false }
+        var currentCount = 1
+        var previousUpper: String?
+        for char in chars {
+            let upper = String(char).uppercased()
+            if previousUpper == nil {
+                previousUpper = upper
+                currentCount = 1
+                continue
+            }
+            if previousUpper == upper {
+                currentCount += 1
+                if currentCount >= length {
+                    return true
+                }
+            } else {
+                previousUpper = upper
+                currentCount = 1
+            }
+        }
+        return false
+    }
+
+    private static func collapseDuplicateRuns(_ token: String) -> String {
+        var result = ""
+        result.reserveCapacity(token.count)
+        var previousUpper: String?
+        for char in token {
+            let upper = String(char).uppercased()
+            if previousUpper == upper {
+                continue
+            }
+            result.append(char)
+            previousUpper = upper
+        }
+        return result
     }
 
     private static func extractSection(
@@ -1599,4 +2024,11 @@ enum Extract {
         let seconds = clamped % 60
         return String(format: "%02d:%02d", minutes, seconds)
     }
+
+    private static func writeResponseOut(_ response: String, outputPath: String) throws {
+        let url = URL(fileURLWithPath: outputPath)
+        let data = response.data(using: .utf8) ?? Data()
+        try data.write(to: url, options: Data.WritingOptions.atomic)
+    }
+
 }

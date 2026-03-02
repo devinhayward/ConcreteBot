@@ -1,0 +1,68 @@
+Main Mixes
+Level,Location,Item Type,Mix Description,Ticket Count,Total Qty,Qty Unit,Unit Rate,Total Cost
+5,Walls / Columns,Mix Customer,STANDARD 45MPA N NA 20MM SP,10,78.00,m³,,
+5,Walls / Columns,Mix Customer,STANDARD 45MPA NA 20MM SP,2,18.00,m³,,
+6,Curbs,Mix Customer,ECOPACT 35MPA C-1 20MM,3,11.50,m³,,
+6,Curbs,Mix Customer,ECOPACT 35MPA C-1 20MM SP 1 20MM,1,8.00,m³,,
+6,Slab,Mix Customer,1:1 GROUT 35MPA NON AIR,2,2.00,m³,,
+6,Slab,Mix Customer,35MPA D NA 20MM,11,98.00,m³,,
+6,Slab,Mix Customer,35MPA NA 20MM HR,7,63.00,m³,,
+6,Slab,Mix Customer,35MPA NON AIR,1,1.00,m³,,
+6,Slab,Mix Customer,AGILIA VERTICAL 35MPA NON-AIR 14MM,2,13.00,m³,,
+6,Slab,Mix Customer,D 35MPA NA 20MM,10,90.00,m³,,
+6,Slab,Mix Customer,ECOPACT 35MPA C-1 20MM SP,2,18.00,m³,,
+6,Slab,Mix Customer,ECOPACT 35MPA C-1 20MM SP 1 20MM,5,42.00,m³,,
+6,Slab,Mix Customer,Plant name: T32 Mavis Ready Mix - Innocon,1,9.00,m³,,
+6,Slab,Mix Customer,Plant name: U21 Milton Ready Mix - Innocon,1,9.00,m³,,
+6,Slab,Mix Customer,STANDARD 35MPA D NA 20MM,1,9.00,m³,,
+6,Slab,Mix Customer,Spec: 35MPA NA 20MM HR,3,27.00,m³,,
+6,Walls / Columns,Mix Customer,40MPA NA 20MM HR,3,21.00,m³,,
+6,Walls / Columns,Mix Customer,STANDARD 40MPA N 20MM,4,29.00,m³,,
+6,Walls / Columns,Mix Customer,STANDARD 40MPA NA 20MM HR,9,71.00,m³,,
+GF,Backfill,Mix Customer,0.4 MPA UNSHRINKFILL,1,4.00,m³,,
+GF,Curbs,Mix Customer,ECOPACT STANDARD 35MPA C1 20MM COR.INH,4,14.50,m³,,
+GF,Storm Tank / Air Shaft,Mix Customer,ECOPACT STANDARD 35MPA C1 20MM COR.INH,4,22.00,m³,,
+GF,Storm Tank / Piers,Mix Customer,ECOPACT 35MPA C-1 20MM,1,6.00,m³,,
+
+Additional Mixes
+Level,Location,Item Type,Mix Description,Ticket Count,Total Qty,Qty Unit,Unit Rate,Total Cost
+5,Walls / Columns,Extra Charge,ENVIRONMENTAL/ENVIRONNEMENT,12,96.00,m³,6.00,576.00
+5,Walls / Columns,Extra Charge,FLEX FUEL FEE 1-INN,12,96.00,m³,4.00,384.00
+5,Walls / Columns,Extra Charge,SITE WASH WATER MANAGEMENT FEE,12,96.00,m³,3.00,288.00
+5,Walls / Columns,Extra Charge,SUPERPLASTICIZER EXT,12,96.00,m³,18.00,1728.00
+5,Walls / Columns,Extra Charge,TOARC FEE (M3),12,96.00,m³,2.50,240.00
+6,Curbs,Extra Charge,ENVIRONMENTAL/ENVIRONNEMENT,4,19.50,m³,6.00,117.00
+6,Curbs,Extra Charge,FLEX FUEL FEE 1-INN,4,19.50,m³,4.00,78.00
+6,Curbs,Extra Charge,SITE WASH WATER MANAGEMENT FEE,4,19.50,m³,3.00,58.50
+6,Curbs,Extra Charge,SUPERPLASTICIZER EXT,1,8.00,m³,18.00,144.00
+6,Curbs,Extra Charge,TOARC FEE (M3),4,19.50,m³,2.50,48.75
+6,Slab,Extra Charge,ENVIRONMENTAL/ENVIRONNEMENT,46,381.00,m³,6.00,2286.00
+6,Slab,Extra Charge,ENVIRONMENTAL/ENVIRONNEMENT FEE,1,1.00,m³,,
+6,Slab,Extra Charge,FLEX FUEL FEE 1-INN,46,381.00,m³,4.00,1524.00
+6,Slab,Extra Charge,SITE WASH WATER MANAGEMENT FEE,46,381.00,m³,3.00,1143.00
+6,Slab,Extra Charge,SUPERPLASTICIZER EXT,41,365.00,m³,18.00,6570.00
+6,Slab,Extra Charge,TOARC FEE (M3),46,390.00,m³,2.50,975.00
+6,Walls / Columns,Extra Charge,ENVIRONMENTAL/ENVIRONNEMENT,16,121.00,m³,6.00,726.00
+6,Walls / Columns,Extra Charge,FLEX FUEL FEE 1-INN,16,121.00,m³,4.00,484.00
+6,Walls / Columns,Extra Charge,SITE WASH WATER MANAGEMENT FEE,16,121.00,m³,3.00,363.00
+6,Walls / Columns,Extra Charge,SUPERPLASTICIZER EXT,12,92.00,m³,18.00,1656.00
+6,Walls / Columns,Extra Charge,TOARC FEE (M3),16,121.00,m³,2.50,302.50
+GF,Backfill,Extra Charge,ENVIRONMENTAL/ENVIRONNEMENT,1,4.00,m³,6.00,24.00
+GF,Backfill,Extra Charge,FLEX FUEL FEE 1-INN,1,4.00,m³,4.00,16.00
+GF,Backfill,Extra Charge,SITE WASH WATER MANAGEMENT FEE,1,4.00,m³,3.00,12.00
+GF,Backfill,Extra Charge,TOARC FEE (M3),1,4.00,m³,2.50,10.00
+GF,Curbs,Extra Charge,ENVIRONMENTAL/ENVIRONNEMENT,4,14.50,m³,6.00,87.00
+GF,Curbs,Extra Charge,FLEX FUEL FEE 1-INN,4,14.50,m³,4.00,58.00
+GF,Curbs,Extra Charge,SITE WASH WATER MANAGEMENT FEE,4,14.50,m³,3.00,43.50
+GF,Curbs,Extra Charge,TOARC FEE (M3),4,14.50,m³,2.50,36.25
+GF,Curbs,Mix Additional 1,CORROSION INHIBITOR (10L/M3) B,4,14.50,m³,50.00,725.00
+GF,Storm Tank / Air Shaft,Extra Charge,ENVIRONMENTAL/ENVIRONNEMENT,4,22.00,m³,6.00,132.00
+GF,Storm Tank / Air Shaft,Extra Charge,ENVIRONMENTAL/ENVIRONNEMENT FEE,1,6.00,m³,,
+GF,Storm Tank / Air Shaft,Extra Charge,FLEX FUEL FEE 1-INN,4,22.00,m³,4.00,88.00
+GF,Storm Tank / Air Shaft,Extra Charge,SITE WASH WATER MANAGEMENT FEE,4,22.00,m³,3.00,66.00
+GF,Storm Tank / Air Shaft,Extra Charge,TOARC FEE (M3),4,22.00,m³,2.50,55.00
+GF,Storm Tank / Air Shaft,Mix Additional 1,CORROSION INHIBITOR (10L/M3) B,4,22.00,m³,50.00,1100.00
+GF,Storm Tank / Piers,Extra Charge,ENVIRONMENTAL/ENVIRONNEMENT,1,6.00,m³,6.00,36.00
+GF,Storm Tank / Piers,Extra Charge,FLEX FUEL FEE 1-INN,1,6.00,m³,4.00,24.00
+GF,Storm Tank / Piers,Extra Charge,SITE WASH WATER MANAGEMENT FEE,1,6.00,m³,3.00,18.00
+GF,Storm Tank / Piers,Extra Charge,TOARC FEE (M3),1,6.00,m³,2.50,15.00

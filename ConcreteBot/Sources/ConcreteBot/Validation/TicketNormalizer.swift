@@ -1,6 +1,11 @@
 import Foundation
 
 enum TicketNormalizer {
+    private struct SemanticSpecToken {
+        let normalized: String
+        let rawEndIndex: Int
+    }
+
     static func normalize(ticket: Ticket) -> Ticket {
         let normalizedExtraCharges = ticket.extraCharges.map { normalize(extraCharge: $0) }
         let dedupedExtraCharges = dedupeExtraCharges(normalizedExtraCharges)
@@ -275,6 +280,9 @@ enum TicketNormalizer {
            !isLikelyMixSpec(normalizedCustomer) {
             normalizedCustomer = normalizedDescription
         }
+        if let customerValue = normalizedCustomer {
+            normalizedCustomer = compactMpaBeforeClassToken(customerValue)
+        }
 
         return MixRow(
             qty: mixRow.qty,
@@ -488,6 +496,7 @@ enum TicketNormalizer {
         normalized = reorderStandardSpec(normalized)
         normalized = dedupeSpecTokenRuns(normalized)
         normalized = collapseRepeatedSpecSequence(normalized)
+        normalized = collapseRepeatedWeatherSpecSuffix(normalized)
         normalized = mergeSplitWordTokens(normalized)
         normalized = moveCorInhToEnd(normalized)
         normalized = moveShotcreteToEnd(normalized)
@@ -762,6 +771,116 @@ enum TicketNormalizer {
         }
 
         return value
+    }
+
+    private static func collapseRepeatedWeatherSpecSuffix(_ value: String) -> String {
+        let rawTokens = value.split(whereSeparator: { $0.isWhitespace })
+        guard rawTokens.count >= 6 else { return value }
+
+        let semanticTokens = buildSemanticSpecTokens(from: rawTokens)
+        guard semanticTokens.count >= 5 else { return value }
+        guard semanticTokens[0].normalized == "WEATHERMIX" ||
+                semanticTokens[0].normalized == "WEATHER" else {
+            return value
+        }
+
+        let bodyCount = semanticTokens.count - 1
+        guard bodyCount >= 4 else { return value }
+
+        for repeatStart in 1..<bodyCount {
+            let suffixCount = bodyCount - repeatStart
+            guard suffixCount >= 2 else { continue }
+            let prefixHasCoreToken = semanticTokens[1...repeatStart].contains {
+                isCoreSpecToken($0.normalized)
+            }
+            guard prefixHasCoreToken else { continue }
+
+            var prefixMatched = true
+            for offset in 0..<suffixCount {
+                let prefix = semanticTokens[1 + offset].normalized
+                let suffix = semanticTokens[1 + repeatStart + offset].normalized
+                if !specTokensEquivalent(prefix, suffix) {
+                    prefixMatched = false
+                    break
+                }
+            }
+            guard prefixMatched else { continue }
+
+            let keepRawEnd = semanticTokens[repeatStart].rawEndIndex
+            return rawTokens[0...keepRawEnd].joined(separator: " ")
+        }
+
+        return value
+    }
+
+    private static func buildSemanticSpecTokens(from rawTokens: [Substring]) -> [SemanticSpecToken] {
+        guard !rawTokens.isEmpty else { return [] }
+        var tokens: [SemanticSpecToken] = []
+        tokens.reserveCapacity(rawTokens.count)
+
+        var index = 0
+        while index < rawTokens.count {
+            let current = String(rawTokens[index])
+            let normalizedCurrent = normalizeSpecToken(current)
+            if index + 1 < rawTokens.count,
+               isNumericSpecToken(normalizedCurrent),
+               normalizeSpecToken(String(rawTokens[index + 1])) == "MPA" {
+                tokens.append(
+                    SemanticSpecToken(
+                        normalized: "\(normalizedCurrent)MPA",
+                        rawEndIndex: index + 1
+                    )
+                )
+                index += 2
+                continue
+            }
+
+            tokens.append(
+                SemanticSpecToken(
+                    normalized: normalizedCurrent,
+                    rawEndIndex: index
+                )
+            )
+            index += 1
+        }
+        return tokens
+    }
+
+    private static func isNumericSpecToken(_ value: String) -> Bool {
+        guard !value.isEmpty else { return false }
+        return value.allSatisfy { $0.isNumber || $0 == "." }
+    }
+
+    private static func specTokensEquivalent(_ lhs: String, _ rhs: String) -> Bool {
+        if lhs == rhs {
+            return true
+        }
+        if lhs == "MPA", rhs.contains("MPA") {
+            return true
+        }
+        if rhs == "MPA", lhs.contains("MPA") {
+            return true
+        }
+        return false
+    }
+
+    private static func compactMpaBeforeClassToken(_ value: String) -> String {
+        guard value.range(of: #"\bC\d+\b"#, options: [.regularExpression, .caseInsensitive]) != nil else {
+            return value
+        }
+        guard let regex = try? NSRegularExpression(
+            pattern: #"(\d+(?:\.\d+)?)\s+MPA(?=\s+C\d+\b)"#,
+            options: [.caseInsensitive]
+        ) else {
+            return value
+        }
+        let range = NSRange(value.startIndex..., in: value)
+        return regex.stringByReplacingMatches(
+            in: value,
+            options: [],
+            range: range,
+            withTemplate: "$1MPA"
+        )
     }
 
     private static func specTokenKey(_ token: Substring) -> String {

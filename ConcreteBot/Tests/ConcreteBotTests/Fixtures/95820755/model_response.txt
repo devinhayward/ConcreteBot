@@ -1,0 +1,53 @@
+{
+  "Ticket No.": "95820755",
+  "Delivery Date": "Fri, Feb 21 2025",
+  "Delivery Time": "11:53",
+  "Delivery Address": "330 Mill Road, Toronto, ON M9C 1Y8",
+  "Mix Customer": {
+    "Qty": "9.00 m³",
+    "Cust. Descr.": "WEATHERMIX 25 MPA C4 20MM HR 25MPA C4 20MM HR",
+    "Description": "WEATHERMIX 25 MPA C4 20MM HR 25MPA C4 20MM HR",
+    "Code": "RMXW25951NX",
+    "Slump": "150+-30"
+  },
+  "Mix Additional 1": {
+    "Qty": "9.00 m³",
+    "Cust. Descr.": "MASTERFIBER F100",
+    "Description": "25AWIN3 WEATHERMIX 2 TO 4 DEGREES",
+    "Code": "907340",
+    "Slump": null
+  },
+  "Mix Additional 2": {
+    "Qty": "9.00 m³",
+    "Cust. Descr.": "25AWIN3 WEATHERMIX",
+    "Description": "MASTERFIBER F100 (0.9KG/M3)",
+    "Code": "908414",
+    "Slump": null
+  },
+  "Extra Charges": [
+    {
+      "Description": "SEASONAL/MANUTE (PER M3)",
+      "Qty": "9.00"
+    },
+    {
+      "Description": "FLEX FUEL FEE 2-INN",
+      "Qty": "9.00"
+    },
+    {
+      "Description": "ENVIRONMENTAL/ENVIRONNEMENT",
+      "Qty": "9.00"
+    },
+    {
+      "Description": "TOARC FEE (M3)",
+      "Qty": "9.00"
+    },
+    {
+      "Description": "SUPERPLASTICIZER EXT",
+      "Qty": "9.00"
+    },
+    {
+      "Description": "SITE WASH WATER MANAGEMENT FEE",
+      "Qty": "9.00"
+    }
+  ]
+}

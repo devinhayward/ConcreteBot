@@ -281,6 +281,54 @@ import Testing
     #expect(normalized.mixCustomer.description == "40MPA F2 14MM SHOTCRETE")
 }
 
+@Test func normalizesRepeatedWeatherSpecSuffixForClassMix() {
+    let ticket = Ticket(
+        ticketNumber: "95820744",
+        deliveryDate: "Fri, Feb 21 2025",
+        deliveryTime: "10:11",
+        deliveryAddress: "330 Mill Road, Toronto, ON M9C 1Y8",
+        mixCustomer: MixRow(
+            qty: "9.00 m³",
+            customerDescription: "WEATHERMIX 25 MPA C4 20MM HR 25MPA C4 20MM HR",
+            description: "WEATHERMIX 25 MPA C4 20MM HR 25MPA C4 20MM HR",
+            code: "RMXW25951NX",
+            slump: "150+-30"
+        ),
+        mixAdditional1: nil,
+        mixAdditional2: nil,
+        extraCharges: []
+    )
+
+    let normalized = TicketNormalizer.normalize(ticket: ticket)
+
+    #expect(normalized.mixCustomer.customerDescription == "WEATHERMIX 25MPA C4 20MM HR")
+    #expect(normalized.mixCustomer.description == "WEATHERMIX 25 MPA C4 20MM HR")
+}
+
+@Test func normalizesRepeatedWeatherSpecSuffixForNonAirMix() {
+    let ticket = Ticket(
+        ticketNumber: "96069731",
+        deliveryDate: "Fri, Feb 21 2025",
+        deliveryTime: "13:14",
+        deliveryAddress: "330 Mill Road, Toronto, ON M9C 1Y8",
+        mixCustomer: MixRow(
+            qty: "8.00 m³",
+            customerDescription: "WEATHERMIX 35 MPA NON AIR 20MM MPA NON",
+            description: "WEATHERMIX 35 MPA NON AIR 20MM MPA NON AIR",
+            code: "RMXW35N511X",
+            slump: "80+-30"
+        ),
+        mixAdditional1: nil,
+        mixAdditional2: nil,
+        extraCharges: []
+    )
+
+    let normalized = TicketNormalizer.normalize(ticket: ticket)
+
+    #expect(normalized.mixCustomer.customerDescription == "WEATHERMIX 35 MPA NON AIR 20MM")
+    #expect(normalized.mixCustomer.description == "WEATHERMIX 35 MPA NON AIR 20MM")
+}
+
 @Test func dedupesRepeatedShotcreteToken() {
     let ticket = Ticket(
         ticketNumber: "95822779",

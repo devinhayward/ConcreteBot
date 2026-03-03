@@ -1,0 +1,43 @@
+{
+  "Ticket No.": "96069731",
+  "Delivery Date": "Fri, Feb 21 2025",
+  "Delivery Time": "13:14",
+  "Delivery Address": "330 Mill Road, Toronto, ON M9C 1Y8",
+  "Mix Customer": {
+    "Qty": "8.00 m³",
+    "Cust. Descr.": "WEATHERMIX 35 MPA NON AIR 20MM MPA NON",
+    "Description": "WEATHERMIX 35 MPA NON AIR 20MM MPA NON AIR",
+    "Code": "RMXW35N511X",
+    "Slump": "80+-30"
+  },
+  "Mix Additional 1": {
+    "Qty": "8.00 m³",
+    "Cust. Descr.": null,
+    "Description": "35NWIN1 WEATHERMIX 8 TO 10 DEGREES",
+    "Code": "909124",
+    "Slump": null
+  },
+  "Mix Additional 2": null,
+  "Extra Charges": [
+    {
+      "Description": "SEASONAL/MANUTE (PER M3)",
+      "Qty": "8.00"
+    },
+    {
+      "Description": "TOARC FEE (M3)",
+      "Qty": "8.00"
+    },
+    {
+      "Description": "ENVIRONMENTAL/ENVIRONNEMENT",
+      "Qty": "8.00"
+    },
+    {
+      "Description": "FLEX FUEL FEE 2-INN",
+      "Qty": "8.00"
+    },
+    {
+      "Description": "SITE WASH WATER MANAGEMENT FEE",
+      "Qty": "8.00"
+    }
+  ]
+}

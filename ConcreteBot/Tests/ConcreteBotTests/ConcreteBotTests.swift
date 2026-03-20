@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import ConcreteBot
 
@@ -558,4 +559,291 @@ import Testing
             "--model-modes", "guided,unknown"
         ])
     }
+}
+
+@Test func usesLegacyCompactValidationFallbackForAdditionalMixRowIssuesInAutoMode() {
+    let issues = [
+        TicketValidationIssue(
+            path: "Mix Additional 1.Qty",
+            message: "Qty must be numeric with optional m3 unit"
+        ),
+        TicketValidationIssue(
+            path: "Mix Additional 1.Slump",
+            message: "Slump must be a number or X+-Y format"
+        ),
+        TicketValidationIssue(
+            path: "Mix Additional 2.Qty",
+            message: "Qty must be numeric with optional m3 unit"
+        )
+    ]
+
+    #expect(
+        Extract.shouldUseLegacyCompactValidationFallback(
+            modelMode: .auto,
+            issues: issues
+        )
+    )
+}
+
+@Test func doesNotUseLegacyCompactValidationFallbackForNonAdditionalMixIssues() {
+    let issues = [
+        TicketValidationIssue(
+            path: "Mix Customer.Qty",
+            message: "Qty must be numeric with optional m3 unit"
+        )
+    ]
+
+    #expect(
+        !Extract.shouldUseLegacyCompactValidationFallback(
+            modelMode: .auto,
+            issues: issues
+        )
+    )
+}
+
+@Test func doesNotUseLegacyCompactValidationFallbackOutsideAutoMode() {
+    let issues = [
+        TicketValidationIssue(
+            path: "Mix Additional 1.Qty",
+            message: "Qty must be numeric with optional m3 unit"
+        )
+    ]
+
+    #expect(
+        !Extract.shouldUseLegacyCompactValidationFallback(
+            modelMode: .guided,
+            issues: issues
+        )
+    )
+    #expect(
+        !Extract.shouldUseLegacyCompactValidationFallback(
+            modelMode: .legacy,
+            issues: issues
+        )
+    )
+}
+
+@Test func lookupFieldEvidenceReturnsTargetMixRowAndParsedHint() {
+    let mixRowLines = """
+    9.00 m3
+    RMX35N 80+-20
+    7.50 m3
+    RMXS45N51NX 150+-30
+    """
+    let mixParsedHints = """
+    Row 1:
+    Qty: 9.00 m3
+    Code: RMX35N
+    Slump: 80+-20
+    Spec: 35MPA N 20MM
+    Row 2:
+    Qty: 7.50 m3
+    Code: RMXS45N51NX
+    Slump: 150+-30
+    Spec: 45MPA N 20MM HR
+    """
+
+    let evidence = Extract.lookupFieldEvidence(
+        path: "Mix Additional 1.Slump",
+        pageText: "",
+        mixText: "",
+        mixRowLines: mixRowLines,
+        mixParsedHints: mixParsedHints,
+        extraChargesText: ""
+    )
+
+    #expect(evidence?.contains("Raw row 2:") == true)
+    #expect(evidence?.contains("RMXS45N51NX 150+-30") == true)
+    #expect(evidence?.contains("Parsed hint row 2:") == true)
+    #expect(evidence?.contains("Slump: 150+-30") == true)
+}
+
+@Test func getMixRowReturnsRequestedOneBasedRow() {
+    let mixRow = Extract.getMixRow(
+        rowIndex: 2,
+        mixText: "",
+        mixRowLines: """
+        9.00 m3
+        RMX35N 80+-20
+        7.50 m3
+        RMXS45N51NX 150+-30
+        """
+    )
+
+    #expect(mixRow == "7.50 m3\nRMXS45N51NX 150+-30")
+}
+
+@Test func getMixRowFallsBackToRawMixSectionText() {
+    let mixRow = Extract.getMixRow(
+        rowIndex: 2,
+        mixText: """
+        MIX
+        QTY CUST DESCR DESCRIPTION CODE SLUMP
+        9.00 m3
+        RMX35N 80+-20
+        7.50 m3
+        RMXS45N51NX 150+-30
+        """,
+        mixRowLines: ""
+    )
+
+    #expect(mixRow == "7.50 m3\nRMXS45N51NX 150+-30")
+}
+
+@Test func getChargeRowReturnsRequestedOneBasedRow() {
+    let chargeRow = Extract.getChargeRow(
+        rowIndex: 2,
+        extraChargesText: """
+        EXTRA CHARGES
+        SEASONAL/MINUTE (PER M3) 9.00
+        FLEX FUEL FEE 1-INN 9.00
+        """
+    )
+
+    #expect(chargeRow == "FLEX FUEL FEE 1-INN 9.00")
+}
+
+@Test func getChargeRowMergesQtyOnlySplitLines() {
+    let chargeRow = Extract.getChargeRow(
+        rowIndex: 1,
+        extraChargesText: """
+        EXTRA CHARGES
+        9.00
+        SEASONAL/MINUTE (PER M3)
+        FLEX FUEL FEE 1-INN 9.00
+        """
+    )
+
+    #expect(chargeRow == "9.00 SEASONAL/MINUTE (PER M3)")
+}
+
+@Test func extractsRecalledTicketNumbersFromOrderSummaryText() {
+    let recalled = Extract.extractRecalledTicketNumbers(from: """
+    1. 9.00 m³ 96077921 5410710 Recalled
+    2. 9.00 m³ 96077922 5410711 Delivered
+    3. 9.00 m³ 96077930 5410487 Recalled
+    """)
+
+    #expect(recalled == Set(["96077921", "96077930"]))
+}
+
+@Test func detectsRecalledWatermarkText() {
+    #expect(Extract.containsRecalledWatermark(in: "RECALLED") == true)
+    #expect(Extract.containsRecalledWatermark(in: "This ticket has been Recalled") == true)
+    #expect(Extract.containsRecalledWatermark(in: "RETURNED: 0,00 m³") == false)
+}
+
+@Test func processPageForTestAppliesRecalledFlagFromDocumentContext() throws {
+    let tickets = try Extract.processPageForTest(
+        pageText: """
+        TICKET NO. 96077921
+        DELIVERY DATE: Wed, Mar 5 2026
+        DELIVERY TIME: 09:00
+        DELIVERY ADDR.: 596 Lolita Gardens
+        MIX
+        9.00 m3
+        RMXS45N51NX 150+-30
+        INSTRUCTIONS
+        EXTRA CHARGES
+        """,
+        modelResponse: """
+        {
+          "Ticket No.": "96077921",
+          "Delivery Date": "Wed, Mar 5 2026",
+          "Delivery Time": "09:00",
+          "Delivery Address": "596 Lolita Gardens",
+          "Mix Customer": {
+            "Qty": "9.00 m3",
+            "Cust. Descr.": null,
+            "Description": null,
+            "Code": "RMXS45N51NX",
+            "Slump": "150+-30"
+          },
+          "Mix Additional 1": null,
+          "Mix Additional 2": null,
+          "Extra Charges": []
+        }
+        """,
+        recalledTicketNumbers: Set(["96077921"])
+    )
+
+    #expect(tickets.count == 1)
+    #expect(tickets.first?.recalled == true)
+}
+
+@Test func processPageForTestAppliesRecalledFlagFromWatermarkText() throws {
+    let tickets = try Extract.processPageForTest(
+        pageText: """
+        RECALLED
+        TICKET NO. 96077921
+        DELIVERY DATE: Wed, Mar 5 2026
+        DELIVERY TIME: 09:00
+        DELIVERY ADDR.: 596 Lolita Gardens
+        MIX
+        9.00 m3
+        RMXS45N51NX 150+-30
+        INSTRUCTIONS
+        EXTRA CHARGES
+        """,
+        modelResponse: """
+        {
+          "Ticket No.": "96077921",
+          "Delivery Date": "Wed, Mar 5 2026",
+          "Delivery Time": "09:00",
+          "Delivery Address": "596 Lolita Gardens",
+          "Mix Customer": {
+            "Qty": "9.00 m3",
+            "Cust. Descr.": null,
+            "Description": null,
+            "Code": "RMXS45N51NX",
+            "Slump": "150+-30"
+          },
+          "Mix Additional 1": null,
+          "Mix Additional 2": null,
+          "Extra Charges": []
+        }
+        """
+    )
+
+    #expect(tickets.count == 1)
+    #expect(tickets.first?.recalled == true)
+}
+
+@Test func fileWriterUsesRecalledSuffixForRecalledTickets() {
+    let ticket = Ticket(
+        ticketNumber: "96077921",
+        recalled: true,
+        deliveryDate: "Wed, Mar 5 2026",
+        deliveryTime: "09:00",
+        deliveryAddress: "596 Lolita Gardens",
+        mixCustomer: MixRow(
+            qty: "9.00 m3",
+            customerDescription: "STANDARD 45MPA N NA 20MM HR",
+            description: "45MPA N NA 20MM HR",
+            code: "RMXS45N51NX",
+            slump: "150+-30"
+        ),
+        mixAdditional1: nil,
+        mixAdditional2: nil,
+        extraCharges: []
+    )
+
+    #expect(FileWriter.outputFileName(for: ticket) == "ticket-96077921_recalled.json")
+}
+
+@Test func lookupFieldEvidenceReturnsRequestedExtraChargeRow() {
+    let evidence = Extract.lookupFieldEvidence(
+        path: "Extra Charges[1].Qty",
+        pageText: "",
+        mixText: "",
+        mixRowLines: "",
+        mixParsedHints: "",
+        extraChargesText: """
+        EXTRA CHARGES
+        SEASONAL/MINUTE (PER M3) 9.00
+        FLEX FUEL FEE 1-INN 9.00
+        """
+    )
+
+    #expect(evidence == "Charge row 2:\nFLEX FUEL FEE 1-INN 9.00")
 }

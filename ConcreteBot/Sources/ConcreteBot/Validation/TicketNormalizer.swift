@@ -48,6 +48,7 @@ enum TicketNormalizer {
 
         return Ticket(
             ticketNumber: ticket.ticketNumber,
+            recalled: ticket.recalled,
             deliveryDate: ticket.deliveryDate,
             deliveryTime: ticket.deliveryTime,
             deliveryAddress: deliveryAddress,

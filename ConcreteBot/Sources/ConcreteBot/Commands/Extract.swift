@@ -1,5 +1,8 @@
 import Foundation
 import PDFKit
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
 
 enum ExtractError: Error, CustomStringConvertible {
     case missingPromptTemplate
@@ -83,6 +86,9 @@ enum Extract {
         let guidedAttempts: Int
         let guidedErrors: [String]
         let usedLegacyFallback: Bool
+        let toolCallCount: Int?
+        let toolOutputCount: Int?
+        let toolNames: [String]?
         let durationMs: Int
         let error: String?
     }
@@ -93,7 +99,9 @@ enum Extract {
         var attemptedPromptVariants: [String]
         var selectedPromptVariant: String?
         var promptChars: Int
+        var promptTokens: Int?
         var repairPromptChars: Int?
+        var repairPromptTokens: Int?
         var validationIssueCount: Int?
         var repaired: Bool
         var status: String
@@ -106,6 +114,7 @@ enum Extract {
         let pdfPath: String
         let modelMode: String
         let promptVariant: String
+        let runtime: FoundationalModelsClient.RuntimeInfo
         let startedAt: String
         let finishedAt: String
         let totalPages: Int
@@ -120,12 +129,14 @@ enum Extract {
 
     private struct ModelRunOutcome {
         let ticket: Ticket
+        let toolMetadata: FoundationalModelsClient.ToolRunMetadata?
         let call: ModelCallTelemetry
     }
 
     private struct RepairAttemptOutcome {
         let model: ModelRunOutcome
         let promptChars: Int
+        let promptTokens: Int?
     }
 
     private struct ModelExecutionError: Error {
@@ -141,12 +152,28 @@ enum Extract {
         let criticalIssues: [TicketValidationIssue]
     }
 
+    private struct ToolContext {
+        let pageText: String
+        let mixText: String
+        let mixRowLines: String
+        let mixParsedHints: String
+        let extraChargesText: String
+    }
+
+    private static let additionalMixValidationFallbackPaths: Set<String> = [
+        "Mix Additional 1.Qty",
+        "Mix Additional 1.Slump",
+        "Mix Additional 2.Qty",
+        "Mix Additional 2.Slump"
+    ]
+
     static func run(options: CLIOptions) throws {
         let compactPromptTemplate = try loadPromptTemplate(named: "prompt_template_compact")
         let minimalPromptTemplate = try loadPromptTemplate(named: "prompt_template_minimal")
         let repairPromptTemplate = try loadPromptTemplate(named: "prompt_template_repair")
         let modelMode = try resolveModelMode(options.modelMode)
         let configuredPromptVariant = try resolvePromptVariant(options.promptVariant)
+        let runtimeInfo = FoundationalModelsClient.runtimeInfo()
 
         let response: String
         if let responseFile = options.responseFile {
@@ -182,6 +209,7 @@ enum Extract {
         guard let document = PDFDocument(url: URL(fileURLWithPath: pdfPath)) else {
             throw ExtractError.pdfLoadFailed(pdfPath)
         }
+        let recalledTicketNumbers = extractRecalledTicketNumbers(document: document)
         let pageNumbers: [Int]
         do {
             pageNumbers = try resolvePageNumbers(pages: options.pages, document: document, pdfPath: pdfPath)
@@ -243,7 +271,9 @@ enum Extract {
                     attemptedPromptVariants: [],
                     selectedPromptVariant: nil,
                     promptChars: 0,
+                    promptTokens: nil,
                     repairPromptChars: nil,
+                    repairPromptTokens: nil,
                     validationIssueCount: nil,
                     repaired: false,
                     status: "success",
@@ -329,14 +359,61 @@ enum Extract {
                         )
                     }
 
+                    if shouldUseLegacyCompactValidationFallback(
+                        modelMode: modelMode,
+                        issues: candidate.criticalIssues
+                    ) {
+                        let legacyPrompt = renderExtractionPrompt(
+                            variant: .compact,
+                            compactTemplate: compactPromptTemplate,
+                            minimalTemplate: minimalPromptTemplate,
+                            pdfPath: pdfPath,
+                            page: pageNumber,
+                            pageText: condensedText,
+                            mixText: mixText,
+                            mixRowLines: mixRowLines,
+                            mixParsedHints: mixParsedHints,
+                            extraChargesText: extraChargesText
+                        )
+                        let legacyFallbackModel = try runModelTicket(
+                            prompt: legacyPrompt,
+                            modelMode: .legacy,
+                            stage: "validation_fallback"
+                        )
+                        pageReport.modelCalls.append(legacyFallbackModel.call)
+                        let legacyFallbackCandidate = evaluateModelCandidate(
+                            rawTicket: legacyFallbackModel.ticket,
+                            mixParsedHints: mixParsedHints,
+                            mixRowLines: mixRowLines,
+                            extraChargesText: extraChargesText,
+                            pageText: pageText,
+                            nonCriticalPaths: nonCriticalPaths
+                        )
+
+                        if legacyFallbackCandidate.criticalIssues.count < candidate.criticalIssues.count {
+                            candidate = legacyFallbackCandidate
+                            prompt = legacyPrompt
+                            currentPromptVariant = .compact
+                            if attemptedPromptVariants.last != .compact {
+                                attemptedPromptVariants.append(.compact)
+                            }
+                        }
+                    }
+
                     pageReport.attemptedPromptVariants = attemptedPromptVariants.map(\.rawValue)
                     pageReport.selectedPromptVariant = currentPromptVariant.rawValue
                     pageReport.promptChars = prompt.count
+                    pageReport.promptTokens = FoundationalModelsClient.promptTokenCount(prompt: prompt)
                     pageReport.validationIssueCount = candidate.issues.count
 
                     if candidate.criticalIssues.isEmpty {
+                        let finalizedTicket = applyRecalledFlag(
+                            to: candidate.normalizedTicket,
+                            recalledTicketNumbers: recalledTicketNumbers,
+                            pageText: pageText
+                        )
                         try TicketValidator.validate(
-                            ticket: candidate.normalizedTicket,
+                            ticket: finalizedTicket,
                             ignoringPaths: nonCriticalPaths
                         )
                         if let responseOut = options.responseOut {
@@ -347,12 +424,12 @@ enum Extract {
                                 throw ExtractError.responseOutputFailed(error.localizedDescription)
                             }
                         }
-                        tickets.append(candidate.normalizedTicket)
+                        tickets.append(finalizedTicket)
                     } else if let repair = try attemptRepair(
                         template: repairPromptTemplate,
                         pdfPath: pdfPath,
                         page: pageNumber,
-                        pageText: condensedText,
+                        pageText: pageText,
                         mixText: mixText,
                         mixRowLines: mixRowLines,
                         mixParsedHints: mixParsedHints,
@@ -362,10 +439,16 @@ enum Extract {
                         modelMode: modelMode
                     ) {
                         pageReport.repairPromptChars = repair.promptChars
+                        pageReport.repairPromptTokens = repair.promptTokens
                         pageReport.modelCalls.append(repair.model.call)
                         pageReport.repaired = true
                         let normalizedRepaired = TicketNormalizer.normalize(ticket: repair.model.ticket)
-                        try TicketValidator.validate(ticket: normalizedRepaired, ignoringPaths: nonCriticalPaths)
+                        let finalizedTicket = applyRecalledFlag(
+                            to: normalizedRepaired,
+                            recalledTicketNumbers: recalledTicketNumbers,
+                            pageText: pageText
+                        )
+                        try TicketValidator.validate(ticket: finalizedTicket, ignoringPaths: nonCriticalPaths)
                         if let responseOut = options.responseOut {
                             do {
                                 let serialized = encodeTicketForPrompt(repair.model.ticket)
@@ -374,7 +457,7 @@ enum Extract {
                                 throw ExtractError.responseOutputFailed(error.localizedDescription)
                             }
                         }
-                        tickets.append(normalizedRepaired)
+                        tickets.append(finalizedTicket)
                     } else {
                         throw TicketValidationError.invalidFields(candidate.criticalIssues)
                     }
@@ -415,6 +498,7 @@ enum Extract {
                 pdfPath: pdfPath,
                 modelMode: modelMode.rawValue,
                 promptVariant: configuredPromptVariant.rawValue,
+                runtime: runtimeInfo,
                 startedAt: formatReportTimestamp(runStart),
                 finishedAt: formatReportTimestamp(runEnd),
                 totalPages: totalPages,
@@ -446,7 +530,8 @@ enum Extract {
     private static func runModelTicket(
         prompt: String,
         modelMode: ModelMode,
-        stage: String
+        stage: String,
+        toolContext: ToolContext? = nil
     ) throws -> ModelRunOutcome {
         let callStart = Date()
         var guidedAttempts = 0
@@ -456,7 +541,8 @@ enum Extract {
         func makeTelemetry(
             path: String,
             status: String,
-            error: Error?
+            error: Error?,
+            toolMetadata: FoundationalModelsClient.ToolRunMetadata?
         ) -> ModelCallTelemetry {
             ModelCallTelemetry(
                 stage: stage,
@@ -466,6 +552,9 @@ enum Extract {
                 guidedAttempts: guidedAttempts,
                 guidedErrors: guidedErrors,
                 usedLegacyFallback: usedLegacyFallback,
+                toolCallCount: toolMetadata?.toolCallCount,
+                toolOutputCount: toolMetadata?.toolOutputCount,
+                toolNames: toolMetadata?.toolNames,
                 durationMs: milliseconds(from: Date().timeIntervalSince(callStart)),
                 error: error.map(describeError)
             )
@@ -474,25 +563,37 @@ enum Extract {
         switch modelMode {
         case .legacy:
             do {
-                let ticket = try runLegacyTicket(prompt: prompt)
+                let legacy = try runLegacyTicket(prompt: prompt, toolContext: toolContext)
                 return ModelRunOutcome(
-                    ticket: ticket,
-                    call: makeTelemetry(path: "legacy", status: "success", error: nil)
+                    ticket: legacy.ticket,
+                    toolMetadata: legacy.toolMetadata,
+                    call: makeTelemetry(
+                        path: "legacy",
+                        status: "success",
+                        error: nil,
+                        toolMetadata: legacy.toolMetadata
+                    )
                 )
             } catch {
                 throw ModelExecutionError(
                     underlying: error,
-                    call: makeTelemetry(path: "legacy", status: "failure", error: error)
+                    call: makeTelemetry(path: "legacy", status: "failure", error: error, toolMetadata: nil)
                 )
             }
         case .guided, .auto:
             while guidedAttempts < guidedMaxAttempts {
                 guidedAttempts += 1
                 do {
-                    let ticket = try FoundationalModelsClient.runTicket(prompt: prompt)
+                    let guided = try runGuidedTicket(prompt: prompt, toolContext: toolContext)
                     return ModelRunOutcome(
-                        ticket: ticket,
-                        call: makeTelemetry(path: "guided", status: "success", error: nil)
+                        ticket: guided.ticket,
+                        toolMetadata: guided.toolMetadata,
+                        call: makeTelemetry(
+                            path: "guided",
+                            status: "success",
+                            error: nil,
+                            toolMetadata: guided.toolMetadata
+                        )
                     )
                 } catch let error as FoundationalModelsError {
                     guidedErrors.append("attempt \(guidedAttempts): \(error.description)")
@@ -504,33 +605,39 @@ enum Extract {
                     if modelMode == .auto, shouldFallbackToLegacy(error: error) {
                         usedLegacyFallback = true
                         do {
-                            let ticket = try runLegacyTicket(prompt: prompt)
+                            let legacy = try runLegacyTicket(prompt: prompt, toolContext: toolContext)
                             return ModelRunOutcome(
-                                ticket: ticket,
-                                call: makeTelemetry(path: "legacy", status: "success", error: nil)
+                                ticket: legacy.ticket,
+                                toolMetadata: legacy.toolMetadata,
+                                call: makeTelemetry(
+                                    path: "legacy",
+                                    status: "success",
+                                    error: nil,
+                                    toolMetadata: legacy.toolMetadata
+                                )
                             )
                         } catch {
                             throw ModelExecutionError(
                                 underlying: error,
-                                call: makeTelemetry(path: "legacy", status: "failure", error: error)
+                                call: makeTelemetry(path: "legacy", status: "failure", error: error, toolMetadata: nil)
                             )
                         }
                     }
                     throw ModelExecutionError(
                         underlying: error,
-                        call: makeTelemetry(path: "guided", status: "failure", error: error)
+                        call: makeTelemetry(path: "guided", status: "failure", error: error, toolMetadata: nil)
                     )
                 } catch {
                     throw ModelExecutionError(
                         underlying: error,
-                        call: makeTelemetry(path: "guided", status: "failure", error: error)
+                        call: makeTelemetry(path: "guided", status: "failure", error: error, toolMetadata: nil)
                     )
                 }
             }
             let fallbackError = FoundationalModelsError.generationFailed("Guided generation retries exhausted.")
             throw ModelExecutionError(
                 underlying: fallbackError,
-                call: makeTelemetry(path: "guided", status: "failure", error: fallbackError)
+                call: makeTelemetry(path: "guided", status: "failure", error: fallbackError, toolMetadata: nil)
             )
         }
     }
@@ -569,14 +676,96 @@ enum Extract {
         }
     }
 
-    private static func runLegacyTicket(prompt: String) throws -> Ticket {
-        let response = try FoundationalModelsClient.run(prompt: prompt)
-        let jsonObjects = splitJSONObjects(from: response)
+    private static func runLegacyTicket(
+        prompt: String,
+        toolContext: ToolContext?
+    ) throws -> FoundationalModelsClient.TicketRunResult {
+        let responseResult: FoundationalModelsClient.TextRunResult
+        if let toolContext {
+            responseResult = try runLegacyTextWithTools(prompt: prompt, toolContext: toolContext)
+        } else {
+            responseResult = try FoundationalModelsClient.runDetailed(prompt: prompt)
+        }
+
+        let jsonObjects = splitJSONObjects(from: responseResult.text)
         guard let json = jsonObjects.first else {
             throw ExtractError.noJSONFound
         }
-        return try TicketValidator.decode(json: json)
+        return FoundationalModelsClient.TicketRunResult(
+            ticket: try TicketValidator.decode(json: json),
+            toolMetadata: responseResult.toolMetadata
+        )
     }
+
+    private static func runGuidedTicket(
+        prompt: String,
+        toolContext: ToolContext?
+    ) throws -> FoundationalModelsClient.TicketRunResult {
+        #if canImport(FoundationModels)
+        if let toolContext, #available(macOS 26.0, *) {
+            return try FoundationalModelsClient.runTicketDetailed(
+                prompt: prompt,
+                tools: makeTools(for: toolContext)
+            )
+        }
+        #endif
+        return try FoundationalModelsClient.runTicketDetailed(prompt: prompt)
+    }
+
+    private static func runLegacyTextWithTools(
+        prompt: String,
+        toolContext: ToolContext
+    ) throws -> FoundationalModelsClient.TextRunResult {
+        #if canImport(FoundationModels)
+        if #available(macOS 26.0, *) {
+            return try FoundationalModelsClient.runDetailed(
+                prompt: prompt,
+                tools: makeTools(for: toolContext)
+            )
+        }
+        #endif
+        return try FoundationalModelsClient.runDetailed(prompt: prompt)
+    }
+
+    private static func repairToolCallGuidance(using toolContext: ToolContext) -> String {
+        #if canImport(FoundationModels)
+        if #available(macOS 26.0, *), !makeTools(for: toolContext).isEmpty {
+            return """
+            TOOLS
+            - getMixRow(rowIndex): exact text for one mix row using a 1-based row index.
+            - getChargeRow(rowIndex): exact text for one extra-charge row using a 1-based row index.
+            - lookupFieldEvidence(path): focused source text for one validation path.
+
+            TOOL USAGE
+            - If a validation error touches mix rows, extra charges, ticket number, or delivery fields, call the relevant tool to verify the exact source text before returning JSON.
+            - Prefer the smallest relevant tool call instead of guessing.
+            """
+        }
+        #endif
+        return ""
+    }
+
+    #if canImport(FoundationModels)
+    @available(macOS 26.0, *)
+    private static func makeTools(for toolContext: ToolContext) -> [any Tool] {
+        [
+            GetMixRowTool(
+                mixText: toolContext.mixText,
+                mixRowLines: toolContext.mixRowLines
+            ),
+            GetChargeRowTool(
+                extraChargesText: toolContext.extraChargesText
+            ),
+            LookupFieldEvidenceTool(
+                pageText: toolContext.pageText,
+                mixText: toolContext.mixText,
+                mixRowLines: toolContext.mixRowLines,
+                mixParsedHints: toolContext.mixParsedHints,
+                extraChargesText: toolContext.extraChargesText
+            )
+        ]
+    }
+    #endif
 
     private static func shouldRetryGuided(error: FoundationalModelsError) -> Bool {
         switch error {
@@ -593,6 +782,16 @@ enum Extract {
             return true
         default:
             return false
+        }
+    }
+
+    static func shouldUseLegacyCompactValidationFallback(
+        modelMode: ModelMode,
+        issues: [TicketValidationIssue]
+    ) -> Bool {
+        guard modelMode == .auto, !issues.isEmpty else { return false }
+        return issues.allSatisfy { issue in
+            additionalMixValidationFallbackPaths.contains(issue.path)
         }
     }
 
@@ -621,7 +820,8 @@ enum Extract {
         pdfPath: String = "fixture.pdf",
         page: Int = 1,
         modelResponse: String,
-        overrides: ExtractionOverrides? = nil
+        overrides: ExtractionOverrides? = nil,
+        recalledTicketNumbers: Set<String> = []
     ) throws -> [Ticket] {
         let normalizedPageText = normalizePageText(pageText)
         var mixText = trimmedNonEmpty(overrides?.mixText)
@@ -677,8 +877,13 @@ enum Extract {
             let mergedTicket = mergeExtraCharges(from: extraChargesTextValue, ticket: adjustedTicket)
             let fallbackTicket = applyPageTextFallback(ticket: mergedTicket, pageText: normalizedPageText)
             let normalizedTicket = TicketNormalizer.normalize(ticket: fallbackTicket)
-            try TicketValidator.validate(ticket: normalizedTicket)
-            tickets.append(normalizedTicket)
+            let finalizedTicket = applyRecalledFlag(
+                to: normalizedTicket,
+                recalledTicketNumbers: recalledTicketNumbers,
+                pageText: normalizedPageText
+            )
+            try TicketValidator.validate(ticket: finalizedTicket)
+            tickets.append(finalizedTicket)
         }
         return tickets
     }
@@ -931,12 +1136,15 @@ enum Extract {
         mixParsedHints: String,
         extraChargesText: String,
         currentJSON: String,
-        validationErrors: String
+        validationErrors: String,
+        fieldEvidence: String,
+        toolCallGuidance: String
     ) -> String {
         let fileName = URL(fileURLWithPath: pdfPath).lastPathComponent
         let maxSectionChars = 650
         let maxExtraChargesChars = 1600
         let condensedExtraChargesText = condenseExtraChargesText(extraChargesText)
+        var focusedFieldEvidence = truncateSection(fieldEvidence, maxChars: 900)
         var sections = PromptSections(
             pageText: truncateSection(pageText, maxChars: maxSectionChars),
             mixText: truncateSection(mixText, maxChars: maxSectionChars),
@@ -946,7 +1154,12 @@ enum Extract {
         )
         let maxPromptChars = 6400
 
-        func buildPrompt(_ sections: PromptSections, _ currentJSON: String, _ validationErrors: String) -> String {
+        func buildPrompt(
+            _ sections: PromptSections,
+            _ currentJSON: String,
+            _ validationErrors: String,
+            _ fieldEvidence: String
+        ) -> String {
             var rendered = template
             rendered = rendered.replacingOccurrences(of: "<<FILE_NAME>>", with: fileName)
             rendered = rendered.replacingOccurrences(of: "<<PAGE_NUMBER>>", with: String(page))
@@ -957,26 +1170,30 @@ enum Extract {
             rendered = rendered.replacingOccurrences(of: "<<EXTRA_CHARGES_TEXT>>", with: sections.extraChargesText)
             rendered = rendered.replacingOccurrences(of: "<<CURRENT_JSON>>", with: currentJSON)
             rendered = rendered.replacingOccurrences(of: "<<VALIDATION_ERRORS>>", with: validationErrors)
+            rendered = rendered.replacingOccurrences(of: "<<FIELD_EVIDENCE>>", with: fieldEvidence)
+            rendered = rendered.replacingOccurrences(of: "<<TOOL_CALL_GUIDANCE>>", with: toolCallGuidance)
             return rendered
         }
 
-        var rendered = buildPrompt(sections, currentJSON, validationErrors)
+        var rendered = buildPrompt(sections, currentJSON, validationErrors, focusedFieldEvidence)
         if rendered.count > maxPromptChars {
             var overage = rendered.count - maxPromptChars
+            shrinkSection(&focusedFieldEvidence, overage: &overage, minChars: 180)
             shrinkSection(&sections.mixParsedHints, overage: &overage, minChars: 120)
             shrinkSection(&sections.mixRowLines, overage: &overage, minChars: 180)
             shrinkSection(&sections.mixText, overage: &overage, minChars: 120)
             shrinkSection(&sections.pageText, overage: &overage, minChars: 200)
             shrinkSection(&sections.extraChargesText, overage: &overage, minChars: 450)
-            rendered = buildPrompt(sections, currentJSON, validationErrors)
+            rendered = buildPrompt(sections, currentJSON, validationErrors, focusedFieldEvidence)
         }
         if rendered.count > maxPromptChars {
+            focusedFieldEvidence = truncateSection(focusedFieldEvidence, maxChars: 260)
             sections.mixText = ""
             sections.mixParsedHints = truncateSection(sections.mixParsedHints, maxChars: 200)
             sections.mixRowLines = truncateSection(sections.mixRowLines, maxChars: 300)
             sections.pageText = truncateSection(sections.pageText, maxChars: 320)
             sections.extraChargesText = truncateSection(sections.extraChargesText, maxChars: 650)
-            rendered = buildPrompt(sections, currentJSON, validationErrors)
+            rendered = buildPrompt(sections, currentJSON, validationErrors, focusedFieldEvidence)
         }
         return rendered
     }
@@ -1002,6 +1219,21 @@ enum Extract {
     ) throws -> RepairAttemptOutcome? {
         let currentJSON = encodeTicketForPrompt(baseTicket)
         let validationErrors = formatValidationErrors(issues)
+        let fieldEvidence = formatFieldEvidence(
+            for: issues,
+            pageText: pageText,
+            mixText: mixText,
+            mixRowLines: mixRowLines,
+            mixParsedHints: mixParsedHints,
+            extraChargesText: extraChargesText
+        )
+        let toolContext = ToolContext(
+            pageText: pageText,
+            mixText: mixText,
+            mixRowLines: mixRowLines,
+            mixParsedHints: mixParsedHints,
+            extraChargesText: extraChargesText
+        )
         let prompt = renderRepairPrompt(
             template: template,
             pdfPath: pdfPath,
@@ -1012,15 +1244,22 @@ enum Extract {
             mixParsedHints: mixParsedHints,
             extraChargesText: extraChargesText,
             currentJSON: currentJSON,
-            validationErrors: validationErrors
+            validationErrors: validationErrors,
+            fieldEvidence: fieldEvidence,
+            toolCallGuidance: repairToolCallGuidance(using: toolContext)
         )
 
         let model = try runModelTicket(
             prompt: prompt,
             modelMode: modelMode,
-            stage: "repair"
+            stage: "repair",
+            toolContext: toolContext
         )
-        return RepairAttemptOutcome(model: model, promptChars: prompt.count)
+        return RepairAttemptOutcome(
+            model: model,
+            promptChars: prompt.count,
+            promptTokens: FoundationalModelsClient.promptTokenCount(prompt: prompt)
+        )
     }
 
     private static func evaluateModelCandidate(
@@ -1064,6 +1303,413 @@ enum Extract {
             return "None"
         }
         return issues.map { "- \($0.path): \($0.message)" }.joined(separator: "\n")
+    }
+
+    static func formatFieldEvidence(
+        for issues: [TicketValidationIssue],
+        pageText: String,
+        mixText: String,
+        mixRowLines: String,
+        mixParsedHints: String,
+        extraChargesText: String
+    ) -> String {
+        let snippets = issues.compactMap { issue -> String? in
+            guard let evidence = lookupFieldEvidence(
+                path: issue.path,
+                pageText: pageText,
+                mixText: mixText,
+                mixRowLines: mixRowLines,
+                mixParsedHints: mixParsedHints,
+                extraChargesText: extraChargesText
+            ) else {
+                return nil
+            }
+            return "\(issue.path):\n\(indentBlock(evidence, prefix: "  "))"
+        }
+
+        if snippets.isEmpty {
+            return "None"
+        }
+        return snippets.joined(separator: "\n")
+    }
+
+    static func getMixRow(
+        rowIndex: Int,
+        mixText: String,
+        mixRowLines: String
+    ) -> String? {
+        guard rowIndex >= 1 else {
+            return nil
+        }
+
+        let resolvedMixRowLines: String
+        if let explicitRows = trimmedNonEmpty(mixRowLines) {
+            resolvedMixRowLines = explicitRows
+        } else {
+            resolvedMixRowLines = extractMixRowLines(mixText)
+        }
+
+        let rawLines = resolvedMixRowLines
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let rows = splitMixRows(
+            rawLines,
+            qtyPattern: #"(\d+(?:\.\d+)?)\s*(m3|m³)"#,
+            cubeSymbol: "\u{00B3}"
+        )
+        guard rowIndex <= rows.count else {
+            return nil
+        }
+        return rows[rowIndex - 1].joined(separator: "\n")
+    }
+
+    static func getChargeRow(
+        rowIndex: Int,
+        extraChargesText: String
+    ) -> String? {
+        guard rowIndex >= 1 else {
+            return nil
+        }
+
+        let condensed = condenseExtraChargesText(extraChargesText)
+        let lines = condensed
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        guard rowIndex <= lines.count else {
+            return nil
+        }
+
+        return lines[rowIndex - 1]
+    }
+
+    #if canImport(FoundationModels)
+    @available(macOS 26.0, *)
+    struct GetMixRowTool: Tool {
+        @Generable
+        struct Arguments {
+            @Guide(description: "1-based mix row index")
+            var rowIndex: Int
+        }
+
+        let name = "getMixRow"
+        let description = "Return the exact text for one mix row using a 1-based row index."
+
+        let mixText: String
+        let mixRowLines: String
+
+        func call(arguments: Arguments) async throws -> String {
+            Extract.getMixRow(
+                rowIndex: arguments.rowIndex,
+                mixText: mixText,
+                mixRowLines: mixRowLines
+            ) ?? "Mix row \(arguments.rowIndex) not found."
+        }
+    }
+
+    @available(macOS 26.0, *)
+    struct GetChargeRowTool: Tool {
+        @Generable
+        struct Arguments {
+            @Guide(description: "1-based extra-charge row index")
+            var rowIndex: Int
+        }
+
+        let name = "getChargeRow"
+        let description = "Return the exact text for one extra-charge row using a 1-based row index."
+
+        let extraChargesText: String
+
+        func call(arguments: Arguments) async throws -> String {
+            Extract.getChargeRow(
+                rowIndex: arguments.rowIndex,
+                extraChargesText: extraChargesText
+            ) ?? "Extra-charge row \(arguments.rowIndex) not found."
+        }
+    }
+
+    @available(macOS 26.0, *)
+    struct LookupFieldEvidenceTool: Tool {
+        @Generable
+        struct Arguments {
+            @Guide(description: "Validation field path")
+            var path: String
+        }
+
+        let name = "lookupFieldEvidence"
+        let description = "Return focused source text for a validation path like Mix Additional 1.Slump or Delivery Address."
+
+        let pageText: String
+        let mixText: String
+        let mixRowLines: String
+        let mixParsedHints: String
+        let extraChargesText: String
+
+        func call(arguments: Arguments) async throws -> String {
+            Extract.lookupFieldEvidence(
+                path: arguments.path,
+                pageText: pageText,
+                mixText: mixText,
+                mixRowLines: mixRowLines,
+                mixParsedHints: mixParsedHints,
+                extraChargesText: extraChargesText
+            ) ?? "No evidence found for \(arguments.path)."
+        }
+    }
+    #endif
+
+    static func lookupFieldEvidence(
+        path: String,
+        pageText: String,
+        mixText: String,
+        mixRowLines: String,
+        mixParsedHints: String,
+        extraChargesText: String
+    ) -> String? {
+        if let rowIndex = mixRowIndex(for: path) {
+            return mixRowEvidence(
+                rowIndex: rowIndex,
+                mixText: mixText,
+                mixRowLines: mixRowLines,
+                mixParsedHints: mixParsedHints
+            )
+        }
+
+        if let chargeIndex = extraChargeIndex(for: path) {
+            return extraChargeEvidence(index: chargeIndex, extraChargesText: extraChargesText)
+        }
+
+        switch path {
+        case "Ticket No.":
+            return topLevelEvidence(
+                in: pageText,
+                markers: ["TICKET NO", "TICKET NUMBER", "TICKET #"],
+                fallback: mixText
+            )
+        case "Delivery Date":
+            return topLevelEvidence(
+                in: pageText,
+                markers: ["DELIVERY DATE", "DATE"],
+                fallback: nil
+            )
+        case "Delivery Time":
+            return topLevelEvidence(
+                in: pageText,
+                markers: ["DELIVERY TIME", "TIME"],
+                fallback: nil
+            )
+        case "Delivery Address":
+            return topLevelEvidence(
+                in: pageText,
+                markers: ["DELIVERY ADDRESS", "DELIVERY ADDR", "JOBSITE", "ADDRESS"],
+                fallback: nil
+            )
+        default:
+            return nil
+        }
+    }
+
+    private static func indentBlock(_ text: String, prefix: String) -> String {
+        text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { "\(prefix)\($0)" }
+            .joined(separator: "\n")
+    }
+
+    private static func mixRowIndex(for path: String) -> Int? {
+        if path.hasPrefix("Mix Customer") {
+            return 0
+        }
+        if path.hasPrefix("Mix Additional 1") {
+            return 1
+        }
+        if path.hasPrefix("Mix Additional 2") {
+            return 2
+        }
+        return nil
+    }
+
+    private static func extraChargeIndex(for path: String) -> Int? {
+        guard let regex = try? NSRegularExpression(pattern: #"^Extra Charges\[(\d+)\]"#) else {
+            return nil
+        }
+        let range = NSRange(path.startIndex..., in: path)
+        guard let match = regex.firstMatch(in: path, range: range),
+              match.numberOfRanges >= 2,
+              let indexRange = Range(match.range(at: 1), in: path) else {
+            return nil
+        }
+        return Int(path[indexRange])
+    }
+
+    private static func mixRowEvidence(
+        rowIndex: Int,
+        mixText: String,
+        mixRowLines: String,
+        mixParsedHints: String
+    ) -> String? {
+        let hints = parseMixParsedHints(mixParsedHints)
+        var parts: [String] = []
+        let oneBasedRowIndex = rowIndex + 1
+
+        if let rawRow = getMixRow(
+            rowIndex: oneBasedRowIndex,
+            mixText: mixText,
+            mixRowLines: mixRowLines
+        ) {
+            parts.append("Raw row \(oneBasedRowIndex):")
+            parts.append(rawRow)
+        }
+
+        if rowIndex < hints.count {
+            let hint = hints[rowIndex]
+            let hintLines = [
+                "Qty: \(hint.qty)",
+                "Code: \(hint.code)",
+                "Slump: \(hint.slump)",
+                "Spec: \(hint.spec)"
+            ].filter { line in
+                let value = line.split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces) ?? ""
+                return !value.isEmpty
+            }
+            if !hintLines.isEmpty {
+                parts.append("Parsed hint row \(oneBasedRowIndex):")
+                parts.append(hintLines.joined(separator: "\n"))
+            }
+        }
+
+        if parts.isEmpty, !mixText.isEmpty {
+            parts.append("Mix section:")
+            parts.append(truncateSection(mixText, maxChars: 240))
+        }
+
+        guard !parts.isEmpty else { return nil }
+        return parts.joined(separator: "\n")
+    }
+
+    private static func extraChargeEvidence(index: Int, extraChargesText: String) -> String? {
+        let oneBasedRowIndex = index + 1
+
+        guard let chargeRow = getChargeRow(
+            rowIndex: oneBasedRowIndex,
+            extraChargesText: extraChargesText
+        ) else {
+            let fallback = truncateSection(condenseExtraChargesText(extraChargesText), maxChars: 240)
+            return fallback.isEmpty ? nil : "Charge section:\n\(fallback)"
+        }
+
+        return "Charge row \(oneBasedRowIndex):\n\(chargeRow)"
+    }
+
+    private static func applyRecalledFlag(
+        to ticket: Ticket,
+        recalledTicketNumbers: Set<String>,
+        pageText: String
+    ) -> Ticket {
+        let normalizedTicketNumber = ticket.ticketNumber?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let isRecalled = ticket.recalled == true ||
+            recalledTicketNumbers.contains(normalizedTicketNumber) ||
+            containsRecalledWatermark(in: pageText)
+        return Ticket(
+            ticketNumber: ticket.ticketNumber,
+            recalled: isRecalled ? true : ticket.recalled,
+            deliveryDate: ticket.deliveryDate,
+            deliveryTime: ticket.deliveryTime,
+            deliveryAddress: ticket.deliveryAddress,
+            mixCustomer: ticket.mixCustomer,
+            mixAdditional1: ticket.mixAdditional1,
+            mixAdditional2: ticket.mixAdditional2,
+            extraCharges: ticket.extraCharges
+        )
+    }
+
+    static func containsRecalledWatermark(in text: String) -> Bool {
+        let normalized = normalizePageText(text)
+        return normalized.range(
+            of: #"\bRECALL(?:ED)?\b"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+    }
+
+    static func extractRecalledTicketNumbers(from text: String) -> Set<String> {
+        let normalized = normalizePageText(text)
+        let pattern = #"(?im)^\s*\d+\.\s+\d+(?:[.,]\d+)?\s*m(?:3|³)\s+(\d{8,})\s+\d+\s+RECALLED\b"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return []
+        }
+        let range = NSRange(normalized.startIndex..., in: normalized)
+        let matches = regex.matches(in: normalized, options: [], range: range)
+        var numbers = Set<String>()
+        for match in matches {
+            guard match.numberOfRanges >= 2,
+                  let ticketRange = Range(match.range(at: 1), in: normalized) else {
+                continue
+            }
+            numbers.insert(String(normalized[ticketRange]))
+        }
+        return numbers
+    }
+
+    private static func extractRecalledTicketNumbers(document: PDFDocument) -> Set<String> {
+        var numbers = Set<String>()
+        for index in 0..<document.pageCount {
+            guard let rawText = document.page(at: index)?.string else { continue }
+            numbers.formUnion(extractRecalledTicketNumbers(from: rawText))
+        }
+        return numbers
+    }
+
+    private static func topLevelEvidence(
+        in pageText: String,
+        markers: [String],
+        fallback: String?
+    ) -> String? {
+        let snippets = nearbyEvidenceLines(in: pageText, markers: markers, radius: 1, maxLines: 3)
+        if !snippets.isEmpty {
+            return snippets.joined(separator: "\n")
+        }
+        guard let fallback,
+              let fallbackValue = trimmedNonEmpty(truncateSection(fallback, maxChars: 200)) else {
+            return nil
+        }
+        return fallbackValue
+    }
+
+    private static func nearbyEvidenceLines(
+        in text: String,
+        markers: [String],
+        radius: Int,
+        maxLines: Int
+    ) -> [String] {
+        let rawLines = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let normalizedMarkers = markers.map { $0.uppercased() }
+        var collected: [String] = []
+        var seen = Set<String>()
+
+        for (index, line) in rawLines.enumerated() {
+            let uppercased = line.uppercased()
+            guard normalizedMarkers.contains(where: { uppercased.contains($0) }) else {
+                continue
+            }
+
+            let start = max(0, index - radius)
+            let end = min(rawLines.count - 1, index + radius)
+            for neighborIndex in start...end {
+                let candidate = rawLines[neighborIndex]
+                guard !candidate.isEmpty, !seen.contains(candidate) else { continue }
+                seen.insert(candidate)
+                collected.append(candidate)
+                if collected.count >= maxLines {
+                    return collected
+                }
+            }
+        }
+
+        return collected
     }
 
     private static func shrinkSection(_ text: inout String, overage: inout Int, minChars: Int) {

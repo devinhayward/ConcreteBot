@@ -51,6 +51,7 @@ private func fixturesRoot() -> URL {
 
 private func assertEqual(expected: Ticket, actual: Ticket, fixture: String) {
     #expect(actual.ticketNumber == expected.ticketNumber, "\(fixture) ticketNumber mismatch")
+    #expect(actual.recalled == expected.recalled, "\(fixture) recalled mismatch")
     #expect(actual.deliveryDate == expected.deliveryDate, "\(fixture) deliveryDate mismatch")
     #expect(actual.deliveryTime == expected.deliveryTime, "\(fixture) deliveryTime mismatch")
     #expect(actual.deliveryAddress == expected.deliveryAddress, "\(fixture) deliveryAddress mismatch")

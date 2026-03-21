@@ -1,0 +1,10 @@
+Row 1:
+Qty: 4.00 m3
+Code: RMXD435N51N
+Slump: 150+-30
+Spec: 35MPA 75%72HR N 20MM
+Row 2:
+Qty: 4.00 m3
+Code: 909124
+Slump: 
+Spec: 35NWIN1 WEATHERMIX 8 TO 10 DEGREES

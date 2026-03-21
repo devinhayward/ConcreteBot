@@ -879,6 +879,30 @@ import Testing
     #expect(normalized.mixCustomer.description == "RAPIDTECT 35MPA 75%72HR N 20MM")
 }
 
+@Test func normalizesRapidtectLeadingVariants() {
+    let ticket = Ticket(
+        ticketNumber: "81761295",
+        deliveryDate: "Tue, Mar 3 2026",
+        deliveryTime: "15:28",
+        deliveryAddress: "596 Lolita Gardens",
+        mixCustomer: MixRow(
+            qty: "4.00 m3",
+            customerDescription: "RAPIDTE 35MPA 75%72HR N 20MM",
+            description: "RAPIDTECT CT 35MPA 75%72HR N 20MM",
+            code: "RMXD435N51N",
+            slump: "150+-30"
+        ),
+        mixAdditional1: nil,
+        mixAdditional2: nil,
+        extraCharges: []
+    )
+
+    let normalized = TicketNormalizer.normalize(ticket: ticket)
+
+    #expect(normalized.mixCustomer.customerDescription == "RAPIDTECT 35MPA 75%72HR N 20MM")
+    #expect(normalized.mixCustomer.description == "RAPIDTECT 35MPA 75%72HR N 20MM")
+}
+
 @Test func nullsSplitRapidtectCustomerOnAdditionalModifierRow() {
     let ticket = Ticket(
         ticketNumber: "47163490",
@@ -1159,6 +1183,63 @@ import Testing
     #expect(tickets.first?.mixAdditional1?.customerDescription == nil)
     #expect(tickets.first?.mixAdditional1?.slump == nil)
     #expect(tickets.first?.mixAdditional2 == nil)
+}
+
+@Test func processPageForTestRestoresTemptectCustomerBrandFromPrimaryRowText() throws {
+    let tickets = try Extract.processPageForTest(
+        pageText: """
+        TICKET NO. 47163595
+        MIX
+        4.50 m³ TEMPTEC
+        T 35MPA
+        N 20MM
+        SP
+        4.50 m³ 35NWIN2 WEATHERMIX
+        5 TO 7 DEGREES
+        n/a - No Manual Additions
+        Thu, Mar 5 2026 09:31
+        DESCRIPTION
+        WEATHERMIX 35MPA N
+        20MM HR
+        RMXW35N51NX 150+-30
+        909130
+        INSTRUCTIONS
+        DELIVERY DATE: Thu, Mar 5 2026
+        DELIVERY TIME: 09:22
+        DELIVERY ADDR.: 596 Lolita Gardens
+        Mississauga, ON L5A
+        4N8
+        EXTRA CHARGES
+        """,
+        modelResponse: """
+        {
+          "Ticket No.": "47163595",
+          "Delivery Date": "Thu, Mar 5 2026",
+          "Delivery Time": "09:22",
+          "Delivery Address": "596 Lolita Gardens, Mississauga, ON L5A 4N8",
+          "Mix Customer": {
+            "Qty": "4.50 m3",
+            "Cust. Descr.": "WEATHERMIX 35MPA N 20MM SP",
+            "Description": "WEATHERMIX 35MPA N 20MM HR",
+            "Code": "RMXW35N51NX",
+            "Slump": "150+-30"
+          },
+          "Mix Additional 1": {
+            "Qty": "4.50 m3",
+            "Cust. Descr.": null,
+            "Description": "35NWIN2 WEATHERMIX 5 TO 7 DEGREES",
+            "Code": "909130",
+            "Slump": null
+          },
+          "Mix Additional 2": null,
+          "Extra Charges": []
+        }
+        """
+    )
+
+    #expect(tickets.count == 1)
+    #expect(tickets.first?.mixCustomer.customerDescription == "TEMPTECT 35MPA N 20MM SP")
+    #expect(tickets.first?.mixCustomer.description == "WEATHERMIX 35MPA N 20MM HR")
 }
 
 @Test func lookupFieldEvidenceReturnsRequestedExtraChargeRow() {

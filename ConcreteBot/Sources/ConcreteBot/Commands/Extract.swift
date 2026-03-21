@@ -3022,6 +3022,20 @@ enum Extract {
                 slump: mixCustomer.slump
             )
         }
+        let restoredTemptectCustomer = restoreTemptectCustomerBrandIfNeeded(
+            detectedBrand: detectedBrand,
+            customerDescription: mixCustomer.customerDescription,
+            description: mixCustomer.description
+        )
+        if restoredTemptectCustomer != mixCustomer.customerDescription {
+            mixCustomer = MixRow(
+                qty: mixCustomer.qty,
+                customerDescription: restoredTemptectCustomer,
+                description: mixCustomer.description,
+                code: mixCustomer.code,
+                slump: mixCustomer.slump
+            )
+        }
         let hasWeatherVariant = mixRowLines.range(
             of: #"\bWEATHERMIX\b|\bWEATHER\b"#,
             options: [.regularExpression, .caseInsensitive]
@@ -3244,6 +3258,54 @@ enum Extract {
             return "\(brand) \(value)"
         }
         return value
+    }
+
+    private static func restoreTemptectCustomerBrandIfNeeded(
+        detectedBrand: String?,
+        customerDescription: String?,
+        description: String?
+    ) -> String? {
+        guard let detectedBrand = trimmedNonEmpty(detectedBrand) else {
+            return customerDescription
+        }
+        guard normalizeSpecLine(detectedBrand) == "TEMPTECT" else {
+            return customerDescription
+        }
+        guard let customerDescription = trimmedNonEmpty(customerDescription) else {
+            return customerDescription
+        }
+        guard customerDescription.range(
+            of: #"\bWEATHERMIX\b|\bWEATHER\b"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil else {
+            return customerDescription
+        }
+        if let description = trimmedNonEmpty(description),
+           description.range(
+            of: #"\bWEATHERMIX\b|\bWEATHER\b"#,
+            options: [.regularExpression, .caseInsensitive]
+           ) == nil {
+            return customerDescription
+        }
+        guard let stripped = stripLeadingWeatherBrand(from: customerDescription),
+              isLikelyPrimaryMixSpec(stripped) else {
+            return customerDescription
+        }
+        return "\(detectedBrand) \(stripped)"
+    }
+
+    private static func stripLeadingWeatherBrand(from value: String) -> String? {
+        let stripped = replacePattern(
+            in: value,
+            pattern: #"^\s*(?:WEATHERMIX|WEATHER)\b\s*"#,
+            with: ""
+        )
+        return trimmedNonEmpty(stripped)
+    }
+
+    private static func isLikelyPrimaryMixSpec(_ value: String) -> Bool {
+        let normalized = normalizeSpecLine(value)
+        return normalized.contains("MPA") || normalized.contains("MM")
     }
 
     private static func applyPageTextFallback(

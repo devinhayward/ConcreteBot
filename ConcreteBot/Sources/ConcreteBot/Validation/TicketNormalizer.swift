@@ -435,11 +435,18 @@ enum TicketNormalizer {
 
     private static func normalizeRapidtectSpec(_ value: String?) -> String? {
         guard var value = value?.trimmedNonEmpty else { return nil }
+        value = replacePattern(in: value, pattern: #"^\s*RAPIDTE\b"#, with: "RAPIDTECT")
         value = replacePattern(in: value, pattern: #"\bRAPIDTE\s+CT\b"#, with: "RAPIDTECT")
+        value = replacePattern(in: value, pattern: #"^\s*RAPIDTECT\s+CT\b\s*"#, with: "RAPIDTECT ")
         value = replacePattern(
             in: value,
             pattern: #"^\s*RAPIDTECTN\s+20MM\s+(.+)$"#,
             with: "RAPIDTECT $1 N 20MM"
+        )
+        value = value.replacingOccurrences(
+            of: #"\s{2,}"#,
+            with: " ",
+            options: .regularExpression
         )
         return value.trimmedNonEmpty
     }

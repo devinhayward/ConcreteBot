@@ -2681,7 +2681,10 @@ enum Extract {
             )
         }
         if let customer = rows.first {
-            let hintSpec = sanitizeHintSpec(customer.spec)
+            let hintSpec = enrichHintSpecWithBrand(
+                existing: mixCustomer.customerDescription ?? mixCustomer.description,
+                hint: sanitizeHintSpec(customer.spec)
+            )
             let hintQty = normalizeQty(customer.qty)
             let hintCode = trimmedNonEmpty(customer.code)
             let hintSlump = trimmedNonEmpty(customer.slump)
@@ -2895,6 +2898,9 @@ enum Extract {
                 }
                 mixAdditional2 = existing
             }
+        }
+        if rows.count < 3 {
+            mixAdditional2 = nil
         }
 
         if let additional = mixAdditional1,
@@ -3178,6 +3184,7 @@ enum Extract {
     ) -> Ticket {
         var deliveryDate = ticket.deliveryDate
         var deliveryTime = ticket.deliveryTime
+        var deliveryAddress = ticket.deliveryAddress
         var mixAdditional1 = ticket.mixAdditional1
         var mixAdditional2 = ticket.mixAdditional2
         let upperText = pageText.uppercased()
@@ -3209,11 +3216,16 @@ enum Extract {
             }
         }
 
+        deliveryAddress = repairDeliveryAddress(
+            existing: deliveryAddress,
+            pageText: pageText
+        )
+
         return Ticket(
             ticketNumber: ticket.ticketNumber,
             deliveryDate: deliveryDate,
             deliveryTime: deliveryTime,
-            deliveryAddress: ticket.deliveryAddress,
+            deliveryAddress: deliveryAddress,
             mixCustomer: ticket.mixCustomer,
             mixAdditional1: mixAdditional1,
             mixAdditional2: mixAdditional2,
@@ -3331,6 +3343,24 @@ enum Extract {
         let merged = mergeSplitWordTokens(cleaned)
         let collapsed = collapseRepeatedSpecSequence(merged)
         return trimmedNonEmpty(collapsed)
+    }
+
+    private static func enrichHintSpecWithBrand(existing: String?, hint: String?) -> String? {
+        guard let hint = trimmedNonEmpty(hint) else { return nil }
+        guard let existing = trimmedNonEmpty(existing) else { return hint }
+        guard let brand = leadingBrandToken(in: existing) else { return hint }
+
+        let normalizedHint = normalizeSpecLine(hint)
+        let hintTokens = normalizedHint.split(whereSeparator: { $0.isWhitespace })
+        if let first = hintTokens.first,
+           isCandidateBrandToken(String(first)) {
+            return hint
+        }
+        if let first = hintTokens.first,
+           (String(first).contains("MPA") || first.first?.isNumber == true) {
+            return "\(brand) \(hint)"
+        }
+        return hint
     }
 
     private static func collapseRepeatedSpecSequence(_ value: String) -> String {
@@ -3928,6 +3958,99 @@ enum Extract {
             return true
         }
         return false
+    }
+
+    private static func leadingBrandToken(in value: String) -> String? {
+        let tokens = value
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+        guard let first = tokens.first else { return nil }
+        return isCandidateBrandToken(first) ? first : nil
+    }
+
+    private static func isCandidateBrandToken(_ value: String) -> Bool {
+        let normalized = normalizeSpecLine(value)
+        guard normalized.count >= 5 else { return false }
+        guard normalized.allSatisfy({ $0.isLetter }) else { return false }
+        let blocked = Set(["STANDARD", "WEATHERMIX", "WEATHER", "SHOTCRETE"])
+        return !blocked.contains(normalized)
+    }
+
+    private static func repairDeliveryAddress(existing: String?, pageText: String) -> String? {
+        if let existing = trimmedNonEmpty(existing) {
+            if hasPostalCode(existing) || hasProvinceMarker(existing) {
+                return existing
+            }
+        }
+        return extractDeliveryAddress(from: pageText) ?? existing
+    }
+
+    private static func extractDeliveryAddress(from pageText: String) -> String? {
+        let lines = pageText
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard !lines.isEmpty else { return nil }
+
+        let stopMarkers = [
+            "GPS:",
+            "PO:",
+            "DELIVERY RATE",
+            "ELEMENTS TO",
+            "POURING MODE",
+            "ORDERED BY",
+            "CUSTOMER NO",
+            "NAME:"
+        ]
+
+        for (index, line) in lines.enumerated() {
+            let upper = line.uppercased()
+            guard upper.contains("DELIVERY ADDR") else { continue }
+
+            var parts: [String] = []
+            if let colonIndex = line.firstIndex(of: ":") {
+                let remainder = line[line.index(after: colonIndex)...]
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !remainder.isEmpty {
+                    parts.append(remainder)
+                }
+            }
+
+            var nextIndex = index + 1
+            while nextIndex < lines.count {
+                let nextLine = lines[nextIndex]
+                if nextLine.isEmpty {
+                    nextIndex += 1
+                    continue
+                }
+                let nextUpper = nextLine.uppercased()
+                if stopMarkers.contains(where: { nextUpper.hasPrefix($0) }) {
+                    break
+                }
+                parts.append(nextLine)
+                nextIndex += 1
+            }
+
+            let joined = parts.joined(separator: " ")
+                .replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if hasPostalCode(joined) {
+                return joined
+            }
+        }
+
+        return nil
+    }
+
+    private static func hasPostalCode(_ value: String) -> Bool {
+        value.range(
+            of: #"\b[A-Z]\d[A-Z]\s*\d[A-Z]\d\b"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+    }
+
+    private static func hasProvinceMarker(_ value: String) -> Bool {
+        let upper = value.uppercased()
+        return upper.contains(", ON") || upper.contains(" ON ")
     }
 
     private static func isTokenSubsequence(

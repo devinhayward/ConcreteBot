@@ -831,6 +831,185 @@ import Testing
     #expect(FileWriter.outputFileName(for: ticket) == "ticket-96077921_recalled.json")
 }
 
+@Test func normalizesTemptectCustomerAndWeatherDescriptionPair() {
+    let ticket = Ticket(
+        ticketNumber: "95830888",
+        deliveryDate: "Mon, Mar 2 2026",
+        deliveryTime: "12:40",
+        deliveryAddress: "596 Lolita Gardens",
+        mixCustomer: MixRow(
+            qty: "9.00 m³",
+            customerDescription: "WEATHERMIX 35MPA N TEMPTECN 20MM SP",
+            description: "WEATHERMIX 35MPA N TEMPTECN 20MM HR",
+            code: "RMXW35N51NX",
+            slump: "150+-30"
+        ),
+        mixAdditional1: nil,
+        mixAdditional2: nil,
+        extraCharges: []
+    )
+
+    let normalized = TicketNormalizer.normalize(ticket: ticket)
+
+    #expect(normalized.mixCustomer.customerDescription == "TEMPTECT 35MPA N 20MM SP")
+    #expect(normalized.mixCustomer.description == "WEATHERMIX 35MPA N 20MM HR")
+}
+
+@Test func normalizesRapidtectSpecOrdering() {
+    let ticket = Ticket(
+        ticketNumber: "95830882",
+        deliveryDate: "Mon, Mar 2 2026",
+        deliveryTime: "11:31",
+        deliveryAddress: "596 Lolita Gardens",
+        mixCustomer: MixRow(
+            qty: "9.00 m³",
+            customerDescription: "RAPIDTECTN 20MM 35MPA 75%72HR",
+            description: "RAPIDTECTN 20MM 35MPA 75%72HR",
+            code: "RMXD435N51N",
+            slump: "150+-30"
+        ),
+        mixAdditional1: nil,
+        mixAdditional2: nil,
+        extraCharges: []
+    )
+
+    let normalized = TicketNormalizer.normalize(ticket: ticket)
+
+    #expect(normalized.mixCustomer.customerDescription == "RAPIDTECT 35MPA 75%72HR N 20MM")
+    #expect(normalized.mixCustomer.description == "RAPIDTECT 35MPA 75%72HR N 20MM")
+}
+
+@Test func processPageForTestRepairsRapidtectHintAndUnexpectedAdditional2() throws {
+    let tickets = try Extract.processPageForTest(
+        pageText: """
+        TICKET NO. 96077828
+        MIX
+        9.00 m³ RAPIDTE
+        CT
+        35MPA
+        75%72HR
+        N 20MM
+        RAPIDTECT 35MPA
+        75%72HR N 20MM
+        RMXD435N51N 150+-30
+        9.00 m³ 35NWIN1 WEATHERMIX
+        8 TO 10 DEGREES
+        n/a - No Manual Additions
+        909124
+        INSTRUCTIONS
+        DELIVERY DATE: Tue, Mar 3 2026
+        DELIVERY TIME: 14:15
+        DELIVERY ADDR.: 596 Lolita Gardens
+        Mississauga, ON L5A
+        4N8
+        GPS: 43.593825
+        EXTRA CHARGES
+        """,
+        modelResponse: """
+        {
+          "Ticket No.": "96077828",
+          "Delivery Date": "Tue, Mar 3 2026",
+          "Delivery Time": "14:15",
+          "Delivery Address": "596 Lolita Gardens",
+          "Mix Customer": {
+            "Qty": "9.00 m³",
+            "Cust. Descr.": "RAPIDTECT 35MPA",
+            "Description": "RAPIDTECT 35MPA",
+            "Code": "RMXD435N51N",
+            "Slump": "150+-30"
+          },
+          "Mix Additional 1": {
+            "Qty": "9.00 m³",
+            "Cust. Descr.": null,
+            "Description": "35NWIN1 WEATHERMIX 8 TO 10 DEGREES",
+            "Code": "909124",
+            "Slump": null
+          },
+          "Mix Additional 2": {
+            "Qty": "9.00 m³",
+            "Cust. Descr.": "35NWIN1 WEATHERMIX 8 TO 10 DEGREES",
+            "Description": "35NWIN1 WEATHERMIX 8 TO 10 DEGREES",
+            "Code": "909124",
+            "Slump": "150+-30"
+          },
+          "Extra Charges": []
+        }
+        """
+    )
+
+    #expect(tickets.count == 1)
+    #expect(tickets.first?.deliveryAddress == "596 Lolita Gardens Mississauga, ON L5A 4N8")
+    #expect(tickets.first?.mixCustomer.customerDescription == "RAPIDTECT 35MPA 75%72HR N 20MM")
+    #expect(tickets.first?.mixCustomer.description == "RAPIDTECT 35MPA 75%72HR N 20MM")
+    #expect(tickets.first?.mixAdditional2 == nil)
+}
+
+@Test func processPageForTestNullsWinterModifierCustomerAndSlump() throws {
+    let tickets = try Extract.processPageForTest(
+        pageText: """
+        TICKET NO. 96077932
+        MIX
+        7.50 m³ TEMPTEC
+        T 35MPA
+        N 20MM
+        SP
+        WEATHERMIX 35MPA N
+        20MM HR
+        7.50 m³ 35NWIN2 WEATHERMIX
+        5 TO 7 DEGREES
+        n/a - No Manual Additions
+        RMXW35N51NX 150+-30
+        909130
+        INSTRUCTIONS
+        DELIVERY DATE: Thu, Mar 5 2026
+        DELIVERY TIME: 14:12
+        DELIVERY ADDR.: 596 Lolita Gardens
+        Mississauga, ON L5A
+        3K7
+        GPS: 43.593865
+        EXTRA CHARGES
+        """,
+        modelResponse: """
+        {
+          "Ticket No.": "96077932",
+          "Delivery Date": "Thu, Mar 5 2026",
+          "Delivery Time": "14:12",
+          "Delivery Address": "596 Lolita Gardens",
+          "Mix Customer": {
+            "Qty": "7.50 m³",
+            "Cust. Descr.": "WEATHERMIX 35MPA N TEMPTECN 20MM SP",
+            "Description": "WEATHERMIX 35MPA N TEMPTECN 20MM HR",
+            "Code": "RMXW35N51NX",
+            "Slump": "150+-30"
+          },
+          "Mix Additional 1": {
+            "Qty": "7.50 m³",
+            "Cust. Descr.": "TEMPTEC",
+            "Description": "35NWIN2 WEATHERMIX 5 TO 7 DEGREES",
+            "Code": "909130",
+            "Slump": "150+-30"
+          },
+          "Mix Additional 2": {
+            "Qty": "7.50 m³",
+            "Cust. Descr.": "35NWIN2 WEATHERMIX 5 TO 7 DEGREES",
+            "Description": "35NWIN2 WEATHERMIX 5 TO 7 DEGREES",
+            "Code": "909130",
+            "Slump": "150+-30"
+          },
+          "Extra Charges": []
+        }
+        """
+    )
+
+    #expect(tickets.count == 1)
+    #expect(tickets.first?.deliveryAddress == "596 Lolita Gardens Mississauga, ON L5A 3K7")
+    #expect(tickets.first?.mixCustomer.customerDescription == "TEMPTECT 35MPA N 20MM SP")
+    #expect(tickets.first?.mixCustomer.description == "WEATHERMIX 35MPA N 20MM HR")
+    #expect(tickets.first?.mixAdditional1?.customerDescription == nil)
+    #expect(tickets.first?.mixAdditional1?.slump == nil)
+    #expect(tickets.first?.mixAdditional2 == nil)
+}
+
 @Test func lookupFieldEvidenceReturnsRequestedExtraChargeRow() {
     let evidence = Extract.lookupFieldEvidence(
         path: "Extra Charges[1].Qty",

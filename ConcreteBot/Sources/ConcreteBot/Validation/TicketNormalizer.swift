@@ -26,25 +26,28 @@ enum TicketNormalizer {
             extraChargeDescriptions: extraChargeDescriptions
         )
 
-        let mixAdditional1 = ticket.mixAdditional1.map { mixRow in
+        var mixAdditional1 = ticket.mixAdditional1.map { mixRow in
             normalize(
                 mixRow: mixRow,
                 extraChargeQtys: extraChargeQtys,
                 extraChargeDescriptions: extraChargeDescriptions
             )
         }
-        let mixAdditional2 = ticket.mixAdditional2.map { mixRow in
+        var mixAdditional2 = ticket.mixAdditional2.map { mixRow in
             normalize(
                 mixRow: mixRow,
                 extraChargeQtys: extraChargeQtys,
                 extraChargeDescriptions: extraChargeDescriptions
             )
         }
+        mixAdditional1 = normalizeAdditionalModifierRow(mixAdditional1)
+        mixAdditional2 = normalizeAdditionalModifierRow(mixAdditional2)
         mixCustomer = stripAdditionalTokens(
             from: mixCustomer,
             additions: [mixAdditional1, mixAdditional2]
         )
         mixCustomer = normalizeCustomerSpec(mixCustomer)
+        mixCustomer = normalizeKnownProductSpecs(mixCustomer)
 
         return Ticket(
             ticketNumber: ticket.ticketNumber,
@@ -292,6 +295,165 @@ enum TicketNormalizer {
             code: mixRow.code,
             slump: mixRow.slump
         )
+    }
+
+    private static func normalizeAdditionalModifierRow(_ row: MixRow?) -> MixRow? {
+        guard let row else { return nil }
+        guard isAdditionalModifierDescription(row.description) else { return row }
+        return MixRow(
+            qty: row.qty,
+            customerDescription: shouldNullAdditionalModifierCustomer(row.customerDescription) ? nil : row.customerDescription,
+            description: row.description,
+            code: row.code,
+            slump: nil
+        )
+    }
+
+    private static func isAdditionalModifierDescription(_ value: String?) -> Bool {
+        guard let value = value?.trimmedNonEmpty?.uppercased() else { return false }
+        if value.contains("DEGREES"), value.contains("WIN") {
+            return true
+        }
+        if value.contains("MANUAL ADDITIONS") {
+            return true
+        }
+        return false
+    }
+
+    private static func shouldNullAdditionalModifierCustomer(_ value: String?) -> Bool {
+        guard let value = value?.trimmedNonEmpty else { return false }
+        let upper = value.uppercased()
+        if upper.contains("WEATHER") || upper.contains("TEMPTEC") || upper.contains("MPA") {
+            return true
+        }
+        let tokens = upper.split(whereSeparator: { $0.isWhitespace })
+        if tokens.count == 1, upper.count <= 10 {
+            return true
+        }
+        return false
+    }
+
+    private static func normalizeKnownProductSpecs(_ mixRow: MixRow) -> MixRow {
+        var customerDescription = mixRow.customerDescription?.trimmedNonEmpty
+        var description = mixRow.description?.trimmedNonEmpty
+
+        customerDescription = collapseWeatherArtifacts(in: customerDescription)
+        description = collapseWeatherArtifacts(in: description)
+
+        if containsTemptectToken(customerDescription) || containsTemptectToken(description) {
+            if let preferredCustomer = preferredTemptectCustomerSource(
+                customerDescription: customerDescription,
+                description: description
+            ),
+               let customerWithoutTemptect = removeTemptectTokens(from: preferredCustomer),
+               let stripped = stripWeatherPrefix(from: customerWithoutTemptect)?.trimmedNonEmpty,
+               isLikelyMixSpec(stripped) {
+                customerDescription = "TEMPTECT \(stripped)"
+            }
+            if let descriptionValue = description {
+                description = removeTemptectTokens(from: descriptionValue)?.trimmedNonEmpty
+            }
+        }
+
+        customerDescription = normalizeRapidtectSpec(customerDescription)
+        description = normalizeRapidtectSpec(description)
+
+        if customerDescription == description,
+           let customerValue = customerDescription,
+           customerValue.uppercased().contains("WEATHERMIX"),
+           customerValue.uppercased().contains("20MM SP") {
+            description = replacePattern(
+                in: customerValue,
+                pattern: #"\b20MM\s+SP\b"#,
+                with: "20MM HR"
+            ).trimmedNonEmpty
+        }
+
+        return MixRow(
+            qty: mixRow.qty,
+            customerDescription: customerDescription,
+            description: description,
+            code: mixRow.code,
+            slump: mixRow.slump
+        )
+    }
+
+    private static func preferredTemptectCustomerSource(
+        customerDescription: String?,
+        description: String?
+    ) -> String? {
+        if let customerDescription,
+           containsTemptectToken(customerDescription),
+           customerDescription.uppercased().contains("SP") {
+            return customerDescription
+        }
+        if let customerDescription, containsTemptectToken(customerDescription) {
+            return customerDescription
+        }
+        if let description, containsTemptectToken(description) {
+            return description
+        }
+        return customerDescription ?? description
+    }
+
+    private static func containsTemptectToken(_ value: String?) -> Bool {
+        guard let value = value?.trimmedNonEmpty else { return false }
+        return value.range(
+            of: #"\bTEMPTEC(?:N|T)?\b|\bTEMPTECT\b"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+    }
+
+    private static func removeTemptectTokens(from value: String) -> String? {
+        let removed = replacePattern(
+            in: value,
+            pattern: #"\bTEMPTEC(?:N|T)?\b|\bTEMPTECT\b"#,
+            with: " "
+        )
+        let collapsed = removed.replacingOccurrences(
+            of: #"\s{2,}"#,
+            with: " ",
+            options: NSString.CompareOptions.regularExpression
+        )
+        return collapsed.trimmedNonEmpty
+    }
+
+    private static func stripWeatherPrefix(from value: String) -> String? {
+        let stripped = replacePattern(
+            in: value,
+            pattern: #"^\s*(?:WEATHERMIX|WEATHER)\b\s*"#,
+            with: ""
+        )
+        return stripped.trimmedNonEmpty
+    }
+
+    private static func normalizeRapidtectSpec(_ value: String?) -> String? {
+        guard var value = value?.trimmedNonEmpty else { return nil }
+        value = replacePattern(in: value, pattern: #"\bRAPIDTE\s+CT\b"#, with: "RAPIDTECT")
+        value = replacePattern(
+            in: value,
+            pattern: #"^\s*RAPIDTECTN\s+20MM\s+(.+)$"#,
+            with: "RAPIDTECT $1 N 20MM"
+        )
+        return value.trimmedNonEmpty
+    }
+
+    private static func collapseWeatherArtifacts(in value: String?) -> String? {
+        guard var value = value?.trimmedNonEmpty else { return nil }
+        value = replacePattern(
+            in: value,
+            pattern: #"^\s*WEATHERMIX\s+(?:WEATHE|WEATHER)\b\s*"#,
+            with: "WEATHERMIX "
+        )
+        return value.trimmedNonEmpty
+    }
+
+    private static func replacePattern(in value: String, pattern: String, with replacement: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return value
+        }
+        let range = NSRange(value.startIndex..., in: value)
+        return regex.stringByReplacingMatches(in: value, options: [], range: range, withTemplate: replacement)
     }
 
     private static func selectBestSpec(_ first: String?, _ second: String?) -> String? {

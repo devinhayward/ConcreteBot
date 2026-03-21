@@ -879,6 +879,36 @@ import Testing
     #expect(normalized.mixCustomer.description == "RAPIDTECT 35MPA 75%72HR N 20MM")
 }
 
+@Test func nullsSplitRapidtectCustomerOnAdditionalModifierRow() {
+    let ticket = Ticket(
+        ticketNumber: "47163490",
+        deliveryDate: "Tue, Mar 3 2026",
+        deliveryTime: "11:03",
+        deliveryAddress: "596 Lolita Gardens",
+        mixCustomer: MixRow(
+            qty: "9.00 m³",
+            customerDescription: "RAPIDTECT 35MPA 75%48 N 20MM",
+            description: "RAPIDTECT 35MPA 75%48 N 20MM",
+            code: "RMXD235N51N",
+            slump: "150+-30"
+        ),
+        mixAdditional1: MixRow(
+            qty: "9.00 m³",
+            customerDescription: "RAPIDTE CT",
+            description: "35NWIN1 WEATHERMIX 8 TO 10 DEGREES",
+            code: "909124",
+            slump: "150+-30"
+        ),
+        mixAdditional2: nil,
+        extraCharges: []
+    )
+
+    let normalized = TicketNormalizer.normalize(ticket: ticket)
+
+    #expect(normalized.mixAdditional1?.customerDescription == nil)
+    #expect(normalized.mixAdditional1?.slump == nil)
+}
+
 @Test func processPageForTestRepairsRapidtectHintAndUnexpectedAdditional2() throws {
     let tickets = try Extract.processPageForTest(
         pageText: """
@@ -942,6 +972,127 @@ import Testing
     #expect(tickets.first?.mixCustomer.customerDescription == "RAPIDTECT 35MPA 75%72HR N 20MM")
     #expect(tickets.first?.mixCustomer.description == "RAPIDTECT 35MPA 75%72HR N 20MM")
     #expect(tickets.first?.mixAdditional2 == nil)
+}
+
+@Test func processPageForTestRestoresRapidtectBrandFromSplitRowText() throws {
+    let tickets = try Extract.processPageForTest(
+        pageText: """
+        TICKET NO. 47163496
+        MIX
+        9.00 m³ RAPIDTE
+        CT
+        35MPA
+        75%48 N
+        20MM
+        RAPIDTECT 35MPA
+        75%48 N 20MM
+        RMXD235N51N 150+-30
+        9.00 m³ 35NWIN1 WEATHERMIX
+        8 TO 10 DEGREES
+        Yes - Manual Additions
+        909124
+        INSTRUCTIONS
+        DELIVERY DATE: Tue, Mar 3 2026
+        DELIVERY TIME: 12:08
+        DELIVERY ADDR.: 596 Lolita Gardens
+        Mississauga, ON L5A
+        4N8
+        GPS: 43.593861
+        EXTRA CHARGES
+        """,
+        modelResponse: """
+        {
+          "Ticket No.": "47163496",
+          "Delivery Date": "Tue, Mar 3 2026",
+          "Delivery Time": "12:08",
+          "Delivery Address": "596 Lolita Gardens, Mississauga, ON L5A 4N8",
+          "Mix Customer": {
+            "Qty": "9.00 m3",
+            "Cust. Descr.": "35MPA 75%48 N 20MM",
+            "Description": "35MPA 75%48 N 20MM",
+            "Code": "RMXD235N51N",
+            "Slump": "150+-30"
+          },
+          "Mix Additional 1": {
+            "Qty": "9.00 m3",
+            "Cust. Descr.": "RAPIDTE",
+            "Description": "35NWIN1 WEATHERMIX 8 TO 10 DEGREES",
+            "Code": "909124",
+            "Slump": "150+-30"
+          },
+          "Mix Additional 2": {
+            "Qty": "9.00 m3",
+            "Cust. Descr.": "RAPIDTE",
+            "Description": "CT",
+            "Code": "RMXD235N51N",
+            "Slump": "150+-30"
+          },
+          "Extra Charges": []
+        }
+        """
+    )
+
+    #expect(tickets.count == 1)
+    #expect(tickets.first?.mixCustomer.customerDescription == "RAPIDTECT 35MPA 75%48 N 20MM")
+    #expect(tickets.first?.mixCustomer.description == "RAPIDTECT 35MPA 75%48 N 20MM")
+    #expect(tickets.first?.mixAdditional1?.customerDescription == nil)
+    #expect(tickets.first?.mixAdditional2 == nil)
+}
+
+@Test func processPageForTestRepairsSplitWeathermixCustomerBrand() throws {
+    let tickets = try Extract.processPageForTest(
+        pageText: """
+        TICKET NO. 81531959
+        MIX
+        7.00 m³ WEATHE
+        RMIX
+        40MPA N
+        20MM SP
+        WEATHERMIX 40MPA N
+        20MM HR
+        RMXW40N51NX 150+-30
+        7.00 m³ 40NWIN1 WEATHERMIX
+        8 TO 10 DEGREES
+        Yes - Manual Additions
+        907478
+        INSTRUCTIONS
+        DELIVERY DATE: Fri, Nov 14 2025
+        DELIVERY TIME: 12:25
+        DELIVERY ADDR.: 596 Lolita Gardens
+        Mississauga, ON L5A
+        3K7
+        GPS: 43.593778
+        EXTRA CHARGES
+        """,
+        modelResponse: """
+        {
+          "Ticket No.": "81531959",
+          "Delivery Date": "Fri, Nov 14 2025",
+          "Delivery Time": "12:25",
+          "Delivery Address": "596 Lolita Gardens Mississauga, ON L5A 3K7",
+          "Mix Customer": {
+            "Qty": "7.00 m³",
+            "Cust. Descr.": "WEATHE",
+            "Description": "40MPA N 20MM SP",
+            "Code": "RMXW40N51NX",
+            "Slump": "150+-30"
+          },
+          "Mix Additional 1": {
+            "Qty": "7.00 m³",
+            "Cust. Descr.": "40NWIN1 WEATHERMIX",
+            "Description": "8 TO 10 DEGREES",
+            "Code": "907478",
+            "Slump": ""
+          },
+          "Mix Additional 2": null,
+          "Extra Charges": []
+        }
+        """
+    )
+
+    #expect(tickets.count == 1)
+    #expect(tickets.first?.mixCustomer.customerDescription == "WEATHERMIX 40MPA N 20MM SP")
+    #expect(tickets.first?.mixCustomer.description == "WEATHERMIX 40MPA N 20MM HR")
 }
 
 @Test func processPageForTestNullsWinterModifierCustomerAndSlump() throws {

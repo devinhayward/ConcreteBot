@@ -327,7 +327,13 @@ enum TicketNormalizer {
             return true
         }
         let tokens = upper.split(whereSeparator: { $0.isWhitespace })
+        let joinedLetters = tokens.joined()
         if tokens.count == 1, upper.count <= 10 {
+            return true
+        }
+        if tokens.count <= 2,
+           joinedLetters.count <= 10,
+           joinedLetters.allSatisfy({ $0.isLetter }) {
             return true
         }
         return false

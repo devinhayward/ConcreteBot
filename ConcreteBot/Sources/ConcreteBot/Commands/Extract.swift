@@ -3001,9 +3001,27 @@ enum Extract {
             of: #"\bSP\b"#,
             options: [.regularExpression, .caseInsensitive]
         ) != nil)
-        guard hasHrVariant || hasSpVariant else { return ticket }
 
         var mixCustomer = ticket.mixCustomer
+        let detectedBrand = detectPrimaryMixBrand(in: mixRowLines)
+        let brandedCustomer = prependBrandIfNeeded(
+            detectedBrand,
+            to: mixCustomer.customerDescription
+        )
+        let brandedDescription = prependBrandIfNeeded(
+            detectedBrand,
+            to: mixCustomer.description
+        )
+        if brandedCustomer != mixCustomer.customerDescription ||
+            brandedDescription != mixCustomer.description {
+            mixCustomer = MixRow(
+                qty: mixCustomer.qty,
+                customerDescription: brandedCustomer,
+                description: brandedDescription,
+                code: mixCustomer.code,
+                slump: mixCustomer.slump
+            )
+        }
         let hasWeatherVariant = mixRowLines.range(
             of: #"\bWEATHERMIX\b|\bWEATHER\b"#,
             options: [.regularExpression, .caseInsensitive]
@@ -3139,12 +3157,20 @@ enum Extract {
                     pattern: #"\bWEATHE\s+RMIX\b"#,
                     with: "WEATHERMIX"
                 )
-                let normalized = normalizeSpecLine(mergedValue)
+                let repairedLeadingFragment = replacePattern(
+                    in: mergedValue,
+                    pattern: #"^\s*WEATHE\b"#,
+                    with: weatherToken
+                )
+                if leadingBrandToken(in: repairedLeadingFragment) != nil {
+                    return repairedLeadingFragment
+                }
+                let normalized = normalizeSpecLine(repairedLeadingFragment)
                 if normalized.contains("WEATHERMIX") || normalized.contains("WEATHER") {
-                    return mergedValue
+                    return repairedLeadingFragment
                 }
                 guard normalized.contains("MPA") || normalized.contains("20MM") else { return value }
-                return "\(weatherToken) \(mergedValue)"
+                return "\(weatherToken) \(repairedLeadingFragment)"
             }
 
             let updatedCustomer = applyWeatherPrefix(mixCustomer.customerDescription)
@@ -3176,6 +3202,48 @@ enum Extract {
             mixAdditional2: ticket.mixAdditional2,
             extraCharges: ticket.extraCharges
         )
+    }
+
+    private static func detectPrimaryMixBrand(in mixRowLines: String) -> String? {
+        guard let row = getMixRow(rowIndex: 1, mixText: "", mixRowLines: mixRowLines) else {
+            return nil
+        }
+        let stripped = stripLeadingQty(row)
+        let merged = mergeSplitWordTokens(stripped)
+        let tokens = merged
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+        for token in tokens {
+            if isCandidateBrandToken(token) {
+                return normalizeSpecLine(token)
+            }
+        }
+        return nil
+    }
+
+    private static func prependBrandIfNeeded(_ brand: String?, to value: String?) -> String? {
+        guard let brand = trimmedNonEmpty(brand),
+              let value = trimmedNonEmpty(value) else {
+            return value
+        }
+        let normalizedValue = normalizeSpecLine(value)
+        if normalizedValue.contains(brand) {
+            return value
+        }
+        if normalizedValue.hasPrefix("WEATHERMIX") ||
+            normalizedValue.hasPrefix("WEATHER") ||
+            normalizedValue.hasPrefix("STANDARD") ||
+            normalizedValue.hasPrefix("SHOTCRETE") {
+            return value
+        }
+        let tokens = normalizedValue.split(whereSeparator: { $0.isWhitespace })
+        if let first = tokens.first, isCandidateBrandToken(String(first)) {
+            return value
+        }
+        if normalizedValue.contains("MPA") || normalizedValue.contains("MM") {
+            return "\(brand) \(value)"
+        }
+        return value
     }
 
     private static func applyPageTextFallback(

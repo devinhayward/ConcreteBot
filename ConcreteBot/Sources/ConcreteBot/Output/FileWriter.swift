@@ -28,7 +28,7 @@ enum FileWriter {
                 continue
             }
 
-            let fileName = "ticket-\(sanitizeFileName(ticketNumber)).json"
+            let fileName = outputFileName(for: ticket)
             let fileURL = outputURL.appendingPathComponent(fileName)
 
             let json = serialize(ticket: ticket)
@@ -48,10 +48,19 @@ enum FileWriter {
         return value.components(separatedBy: invalid).joined(separator: "_")
     }
 
+    static func outputFileName(for ticket: Ticket) -> String {
+        let ticketNumber = ticket.ticketNumber?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let suffix = ticket.recalled == true ? "_recalled" : ""
+        return "ticket-\(sanitizeFileName(ticketNumber))\(suffix).json"
+    }
+
     private static func serialize(ticket: Ticket) -> String {
         var lines: [String] = []
         lines.append("{")
         lines.append(formatField("Ticket No.", value: ticket.ticketNumber, level: 1, trailingComma: true))
+        if ticket.recalled == true {
+            lines.append(formatBooleanField("Recalled", value: true, level: 1, trailingComma: true))
+        }
         lines.append(formatField("Delivery Date", value: ticket.deliveryDate, level: 1, trailingComma: true))
         lines.append(formatField("Delivery Time", value: ticket.deliveryTime, level: 1, trailingComma: true))
         lines.append(formatField("Delivery Address", value: ticket.deliveryAddress, level: 1, trailingComma: true))
@@ -81,6 +90,12 @@ enum FileWriter {
         let indent = String(repeating: "  ", count: level)
         let suffix = trailingComma ? "," : ""
         return "\(indent)\"\(escape(key))\": null\(suffix)"
+    }
+
+    private static func formatBooleanField(_ key: String, value: Bool, level: Int, trailingComma: Bool) -> String {
+        let indent = String(repeating: "  ", count: level)
+        let suffix = trailingComma ? "," : ""
+        return "\(indent)\"\(escape(key))\": \(value ? "true" : "false")\(suffix)"
     }
 
     private static func formatMixRowField(_ key: String, row: MixRow, level: Int, trailingComma: Bool) -> String {

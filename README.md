@@ -17,7 +17,13 @@ ConcreteBot reads each page in the range and sends it to the system model for ex
 Phase 4 extraction options:
 - `--model-mode auto|guided|legacy`
 - `--prompt-variant adaptive|compact|minimal|none` (default `adaptive`: starts minimal and escalates to compact before repair when needed)
-- `--run-report /path/to/report.json` (per-page telemetry)
+- `--run-report /path/to/report.json` (per-page telemetry, including Foundation Models runtime metadata such as OS/model line and context window when available)
+- In `auto` mode, if guided generation only fails validation on `Mix Additional 1/2` quantity or slump fields, ConcreteBot automatically retries that page with `legacy` + `compact` before falling through to repair.
+- Repair prompts now include focused field evidence derived from the page text, mix-row extraction, parsed mix hints, and indexed extra-charge rows for the specific validation paths being corrected.
+- Repair sessions also expose Foundation Models tools for `getMixRow`, `getChargeRow`, and `lookupFieldEvidence`, and `--run-report` now records tool-call counts and tool names when the model uses them.
+
+Foundation Models note:
+- Apple documents a model split between `26.0-26.3` and `26.4+`. If extraction quality shifts after OS updates, compare `--run-report` output across runs and version prompt templates accordingly.
 
 ## Manual workflow
 

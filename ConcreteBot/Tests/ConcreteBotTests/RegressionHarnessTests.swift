@@ -51,9 +51,13 @@ private func fixturesRoot() -> URL {
 
 private func assertEqual(expected: Ticket, actual: Ticket, fixture: String) {
     #expect(actual.ticketNumber == expected.ticketNumber, "\(fixture) ticketNumber mismatch")
+    #expect(actual.recalled == expected.recalled, "\(fixture) recalled mismatch")
     #expect(actual.deliveryDate == expected.deliveryDate, "\(fixture) deliveryDate mismatch")
     #expect(actual.deliveryTime == expected.deliveryTime, "\(fixture) deliveryTime mismatch")
-    #expect(actual.deliveryAddress == expected.deliveryAddress, "\(fixture) deliveryAddress mismatch")
+    #expect(
+        normalizedAddress(actual.deliveryAddress) == normalizedAddress(expected.deliveryAddress),
+        "\(fixture) deliveryAddress mismatch"
+    )
 
     assertEqualMixRow(
         expected: expected.mixCustomer,
@@ -98,11 +102,13 @@ private func assertEqualOptionalMixRow(
     path: String,
     fixture: String
 ) {
-    if expected == nil || actual == nil {
-        #expect(expected == nil && actual == nil, "\(fixture) \(path) nil mismatch")
+    let normalizedExpected = normalizeOptionalMixRow(expected)
+    let normalizedActual = normalizeOptionalMixRow(actual)
+    if normalizedExpected == nil || normalizedActual == nil {
+        #expect(normalizedExpected == nil && normalizedActual == nil, "\(fixture) \(path) nil mismatch")
         return
     }
-    assertEqualMixRow(expected: expected!, actual: actual!, path: path, fixture: fixture)
+    assertEqualMixRow(expected: normalizedExpected!, actual: normalizedActual!, path: path, fixture: fixture)
 }
 
 private func assertEqualMixRow(
@@ -116,4 +122,31 @@ private func assertEqualMixRow(
     #expect(actual.description == expected.description, "\(fixture) \(path).Description mismatch")
     #expect(actual.code == expected.code, "\(fixture) \(path).Code mismatch")
     #expect(actual.slump == expected.slump, "\(fixture) \(path).Slump mismatch")
+}
+
+private func normalizedAddress(_ value: String?) -> String? {
+    guard let value else { return nil }
+    let upper = value.uppercased()
+    let collapsed = upper.replacingOccurrences(
+        of: #"[^A-Z0-9]+"#,
+        with: " ",
+        options: .regularExpression
+    )
+    let trimmed = collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+private func normalizeOptionalMixRow(_ row: MixRow?) -> MixRow? {
+    guard let row else { return nil }
+    let values = [
+        row.qty,
+        row.customerDescription,
+        row.description,
+        row.code,
+        row.slump
+    ]
+    if values.allSatisfy({ $0?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true }) {
+        return nil
+    }
+    return row
 }

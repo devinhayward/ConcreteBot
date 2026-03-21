@@ -16,6 +16,11 @@ CURRENT JSON
 VALIDATION ERRORS (priority)
 <<VALIDATION_ERRORS>>
 
+FIELD EVIDENCE (focused)
+<<FIELD_EVIDENCE>>
+
+<<TOOL_CALL_GUIDANCE>>
+
 REQUIRED JSON SHAPE (single object)
 - Ticket No.
 - Delivery Date
@@ -28,6 +33,7 @@ REQUIRED JSON SHAPE (single object)
 
 RULES
 - Keep non-errored fields unchanged unless a correction is necessary for consistency.
+- Prefer FIELD EVIDENCE for errored fields when it is present.
 - Use null when a field is missing.
 - Mix fields must come only from MIX ROW LINES and MIX PARSED HINTS.
 - Row mapping: Row 1 -> Mix Customer, Row 2 -> Mix Additional 1, Row 3 -> Mix Additional 2.

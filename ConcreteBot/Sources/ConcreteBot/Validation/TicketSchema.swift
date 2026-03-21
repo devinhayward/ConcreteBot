@@ -2,6 +2,7 @@ import Foundation
 
 struct Ticket: Codable {
     let ticketNumber: String?
+    let recalled: Bool?
     let deliveryDate: String?
     let deliveryTime: String?
     let deliveryAddress: String?
@@ -12,6 +13,7 @@ struct Ticket: Codable {
 
     enum CodingKeys: String, CodingKey {
         case ticketNumber = "Ticket No."
+        case recalled = "Recalled"
         case deliveryDate = "Delivery Date"
         case deliveryTime = "Delivery Time"
         case deliveryAddress = "Delivery Address"
@@ -19,6 +21,28 @@ struct Ticket: Codable {
         case mixAdditional1 = "Mix Additional 1"
         case mixAdditional2 = "Mix Additional 2"
         case extraCharges = "Extra Charges"
+    }
+
+    init(
+        ticketNumber: String?,
+        recalled: Bool? = nil,
+        deliveryDate: String?,
+        deliveryTime: String?,
+        deliveryAddress: String?,
+        mixCustomer: MixRow,
+        mixAdditional1: MixRow?,
+        mixAdditional2: MixRow?,
+        extraCharges: [ExtraCharge]
+    ) {
+        self.ticketNumber = ticketNumber
+        self.recalled = recalled
+        self.deliveryDate = deliveryDate
+        self.deliveryTime = deliveryTime
+        self.deliveryAddress = deliveryAddress
+        self.mixCustomer = mixCustomer
+        self.mixAdditional1 = mixAdditional1
+        self.mixAdditional2 = mixAdditional2
+        self.extraCharges = extraCharges
     }
 }
 

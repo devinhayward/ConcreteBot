@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import ConcreteBot
 
@@ -558,4 +559,621 @@ import Testing
             "--model-modes", "guided,unknown"
         ])
     }
+}
+
+@Test func usesLegacyCompactValidationFallbackForAdditionalMixRowIssuesInAutoMode() {
+    let issues = [
+        TicketValidationIssue(
+            path: "Mix Additional 1.Qty",
+            message: "Qty must be numeric with optional m3 unit"
+        ),
+        TicketValidationIssue(
+            path: "Mix Additional 1.Slump",
+            message: "Slump must be a number or X+-Y format"
+        ),
+        TicketValidationIssue(
+            path: "Mix Additional 2.Qty",
+            message: "Qty must be numeric with optional m3 unit"
+        )
+    ]
+
+    #expect(
+        Extract.shouldUseLegacyCompactValidationFallback(
+            modelMode: .auto,
+            issues: issues
+        )
+    )
+}
+
+@Test func doesNotUseLegacyCompactValidationFallbackForNonAdditionalMixIssues() {
+    let issues = [
+        TicketValidationIssue(
+            path: "Mix Customer.Qty",
+            message: "Qty must be numeric with optional m3 unit"
+        )
+    ]
+
+    #expect(
+        !Extract.shouldUseLegacyCompactValidationFallback(
+            modelMode: .auto,
+            issues: issues
+        )
+    )
+}
+
+@Test func doesNotUseLegacyCompactValidationFallbackOutsideAutoMode() {
+    let issues = [
+        TicketValidationIssue(
+            path: "Mix Additional 1.Qty",
+            message: "Qty must be numeric with optional m3 unit"
+        )
+    ]
+
+    #expect(
+        !Extract.shouldUseLegacyCompactValidationFallback(
+            modelMode: .guided,
+            issues: issues
+        )
+    )
+    #expect(
+        !Extract.shouldUseLegacyCompactValidationFallback(
+            modelMode: .legacy,
+            issues: issues
+        )
+    )
+}
+
+@Test func lookupFieldEvidenceReturnsTargetMixRowAndParsedHint() {
+    let mixRowLines = """
+    9.00 m3
+    RMX35N 80+-20
+    7.50 m3
+    RMXS45N51NX 150+-30
+    """
+    let mixParsedHints = """
+    Row 1:
+    Qty: 9.00 m3
+    Code: RMX35N
+    Slump: 80+-20
+    Spec: 35MPA N 20MM
+    Row 2:
+    Qty: 7.50 m3
+    Code: RMXS45N51NX
+    Slump: 150+-30
+    Spec: 45MPA N 20MM HR
+    """
+
+    let evidence = Extract.lookupFieldEvidence(
+        path: "Mix Additional 1.Slump",
+        pageText: "",
+        mixText: "",
+        mixRowLines: mixRowLines,
+        mixParsedHints: mixParsedHints,
+        extraChargesText: ""
+    )
+
+    #expect(evidence?.contains("Raw row 2:") == true)
+    #expect(evidence?.contains("RMXS45N51NX 150+-30") == true)
+    #expect(evidence?.contains("Parsed hint row 2:") == true)
+    #expect(evidence?.contains("Slump: 150+-30") == true)
+}
+
+@Test func getMixRowReturnsRequestedOneBasedRow() {
+    let mixRow = Extract.getMixRow(
+        rowIndex: 2,
+        mixText: "",
+        mixRowLines: """
+        9.00 m3
+        RMX35N 80+-20
+        7.50 m3
+        RMXS45N51NX 150+-30
+        """
+    )
+
+    #expect(mixRow == "7.50 m3\nRMXS45N51NX 150+-30")
+}
+
+@Test func getMixRowFallsBackToRawMixSectionText() {
+    let mixRow = Extract.getMixRow(
+        rowIndex: 2,
+        mixText: """
+        MIX
+        QTY CUST DESCR DESCRIPTION CODE SLUMP
+        9.00 m3
+        RMX35N 80+-20
+        7.50 m3
+        RMXS45N51NX 150+-30
+        """,
+        mixRowLines: ""
+    )
+
+    #expect(mixRow == "7.50 m3\nRMXS45N51NX 150+-30")
+}
+
+@Test func getChargeRowReturnsRequestedOneBasedRow() {
+    let chargeRow = Extract.getChargeRow(
+        rowIndex: 2,
+        extraChargesText: """
+        EXTRA CHARGES
+        SEASONAL/MINUTE (PER M3) 9.00
+        FLEX FUEL FEE 1-INN 9.00
+        """
+    )
+
+    #expect(chargeRow == "FLEX FUEL FEE 1-INN 9.00")
+}
+
+@Test func getChargeRowMergesQtyOnlySplitLines() {
+    let chargeRow = Extract.getChargeRow(
+        rowIndex: 1,
+        extraChargesText: """
+        EXTRA CHARGES
+        9.00
+        SEASONAL/MINUTE (PER M3)
+        FLEX FUEL FEE 1-INN 9.00
+        """
+    )
+
+    #expect(chargeRow == "9.00 SEASONAL/MINUTE (PER M3)")
+}
+
+@Test func extractsRecalledTicketNumbersFromOrderSummaryText() {
+    let recalled = Extract.extractRecalledTicketNumbers(from: """
+    1. 9.00 m³ 96077921 5410710 Recalled
+    2. 9.00 m³ 96077922 5410711 Delivered
+    3. 9.00 m³ 96077930 5410487 Recalled
+    """)
+
+    #expect(recalled == Set(["96077921", "96077930"]))
+}
+
+@Test func detectsRecalledWatermarkText() {
+    #expect(Extract.containsRecalledWatermark(in: "RECALLED") == true)
+    #expect(Extract.containsRecalledWatermark(in: "This ticket has been Recalled") == true)
+    #expect(Extract.containsRecalledWatermark(in: "RETURNED: 0,00 m³") == false)
+}
+
+@Test func processPageForTestAppliesRecalledFlagFromDocumentContext() throws {
+    let tickets = try Extract.processPageForTest(
+        pageText: """
+        TICKET NO. 96077921
+        DELIVERY DATE: Wed, Mar 5 2026
+        DELIVERY TIME: 09:00
+        DELIVERY ADDR.: 596 Lolita Gardens
+        MIX
+        9.00 m3
+        RMXS45N51NX 150+-30
+        INSTRUCTIONS
+        EXTRA CHARGES
+        """,
+        modelResponse: """
+        {
+          "Ticket No.": "96077921",
+          "Delivery Date": "Wed, Mar 5 2026",
+          "Delivery Time": "09:00",
+          "Delivery Address": "596 Lolita Gardens",
+          "Mix Customer": {
+            "Qty": "9.00 m3",
+            "Cust. Descr.": null,
+            "Description": null,
+            "Code": "RMXS45N51NX",
+            "Slump": "150+-30"
+          },
+          "Mix Additional 1": null,
+          "Mix Additional 2": null,
+          "Extra Charges": []
+        }
+        """,
+        recalledTicketNumbers: Set(["96077921"])
+    )
+
+    #expect(tickets.count == 1)
+    #expect(tickets.first?.recalled == true)
+}
+
+@Test func processPageForTestAppliesRecalledFlagFromWatermarkText() throws {
+    let tickets = try Extract.processPageForTest(
+        pageText: """
+        RECALLED
+        TICKET NO. 96077921
+        DELIVERY DATE: Wed, Mar 5 2026
+        DELIVERY TIME: 09:00
+        DELIVERY ADDR.: 596 Lolita Gardens
+        MIX
+        9.00 m3
+        RMXS45N51NX 150+-30
+        INSTRUCTIONS
+        EXTRA CHARGES
+        """,
+        modelResponse: """
+        {
+          "Ticket No.": "96077921",
+          "Delivery Date": "Wed, Mar 5 2026",
+          "Delivery Time": "09:00",
+          "Delivery Address": "596 Lolita Gardens",
+          "Mix Customer": {
+            "Qty": "9.00 m3",
+            "Cust. Descr.": null,
+            "Description": null,
+            "Code": "RMXS45N51NX",
+            "Slump": "150+-30"
+          },
+          "Mix Additional 1": null,
+          "Mix Additional 2": null,
+          "Extra Charges": []
+        }
+        """
+    )
+
+    #expect(tickets.count == 1)
+    #expect(tickets.first?.recalled == true)
+}
+
+@Test func fileWriterUsesRecalledSuffixForRecalledTickets() {
+    let ticket = Ticket(
+        ticketNumber: "96077921",
+        recalled: true,
+        deliveryDate: "Wed, Mar 5 2026",
+        deliveryTime: "09:00",
+        deliveryAddress: "596 Lolita Gardens",
+        mixCustomer: MixRow(
+            qty: "9.00 m3",
+            customerDescription: "STANDARD 45MPA N NA 20MM HR",
+            description: "45MPA N NA 20MM HR",
+            code: "RMXS45N51NX",
+            slump: "150+-30"
+        ),
+        mixAdditional1: nil,
+        mixAdditional2: nil,
+        extraCharges: []
+    )
+
+    #expect(FileWriter.outputFileName(for: ticket) == "ticket-96077921_recalled.json")
+}
+
+@Test func normalizesTemptectCustomerAndWeatherDescriptionPair() {
+    let ticket = Ticket(
+        ticketNumber: "95830888",
+        deliveryDate: "Mon, Mar 2 2026",
+        deliveryTime: "12:40",
+        deliveryAddress: "596 Lolita Gardens",
+        mixCustomer: MixRow(
+            qty: "9.00 m³",
+            customerDescription: "WEATHERMIX 35MPA N TEMPTECN 20MM SP",
+            description: "WEATHERMIX 35MPA N TEMPTECN 20MM HR",
+            code: "RMXW35N51NX",
+            slump: "150+-30"
+        ),
+        mixAdditional1: nil,
+        mixAdditional2: nil,
+        extraCharges: []
+    )
+
+    let normalized = TicketNormalizer.normalize(ticket: ticket)
+
+    #expect(normalized.mixCustomer.customerDescription == "TEMPTECT 35MPA N 20MM SP")
+    #expect(normalized.mixCustomer.description == "WEATHERMIX 35MPA N 20MM HR")
+}
+
+@Test func normalizesRapidtectSpecOrdering() {
+    let ticket = Ticket(
+        ticketNumber: "95830882",
+        deliveryDate: "Mon, Mar 2 2026",
+        deliveryTime: "11:31",
+        deliveryAddress: "596 Lolita Gardens",
+        mixCustomer: MixRow(
+            qty: "9.00 m³",
+            customerDescription: "RAPIDTECTN 20MM 35MPA 75%72HR",
+            description: "RAPIDTECTN 20MM 35MPA 75%72HR",
+            code: "RMXD435N51N",
+            slump: "150+-30"
+        ),
+        mixAdditional1: nil,
+        mixAdditional2: nil,
+        extraCharges: []
+    )
+
+    let normalized = TicketNormalizer.normalize(ticket: ticket)
+
+    #expect(normalized.mixCustomer.customerDescription == "RAPIDTECT 35MPA 75%72HR N 20MM")
+    #expect(normalized.mixCustomer.description == "RAPIDTECT 35MPA 75%72HR N 20MM")
+}
+
+@Test func nullsSplitRapidtectCustomerOnAdditionalModifierRow() {
+    let ticket = Ticket(
+        ticketNumber: "47163490",
+        deliveryDate: "Tue, Mar 3 2026",
+        deliveryTime: "11:03",
+        deliveryAddress: "596 Lolita Gardens",
+        mixCustomer: MixRow(
+            qty: "9.00 m³",
+            customerDescription: "RAPIDTECT 35MPA 75%48 N 20MM",
+            description: "RAPIDTECT 35MPA 75%48 N 20MM",
+            code: "RMXD235N51N",
+            slump: "150+-30"
+        ),
+        mixAdditional1: MixRow(
+            qty: "9.00 m³",
+            customerDescription: "RAPIDTE CT",
+            description: "35NWIN1 WEATHERMIX 8 TO 10 DEGREES",
+            code: "909124",
+            slump: "150+-30"
+        ),
+        mixAdditional2: nil,
+        extraCharges: []
+    )
+
+    let normalized = TicketNormalizer.normalize(ticket: ticket)
+
+    #expect(normalized.mixAdditional1?.customerDescription == nil)
+    #expect(normalized.mixAdditional1?.slump == nil)
+}
+
+@Test func processPageForTestRepairsRapidtectHintAndUnexpectedAdditional2() throws {
+    let tickets = try Extract.processPageForTest(
+        pageText: """
+        TICKET NO. 96077828
+        MIX
+        9.00 m³ RAPIDTE
+        CT
+        35MPA
+        75%72HR
+        N 20MM
+        RAPIDTECT 35MPA
+        75%72HR N 20MM
+        RMXD435N51N 150+-30
+        9.00 m³ 35NWIN1 WEATHERMIX
+        8 TO 10 DEGREES
+        n/a - No Manual Additions
+        909124
+        INSTRUCTIONS
+        DELIVERY DATE: Tue, Mar 3 2026
+        DELIVERY TIME: 14:15
+        DELIVERY ADDR.: 596 Lolita Gardens
+        Mississauga, ON L5A
+        4N8
+        GPS: 43.593825
+        EXTRA CHARGES
+        """,
+        modelResponse: """
+        {
+          "Ticket No.": "96077828",
+          "Delivery Date": "Tue, Mar 3 2026",
+          "Delivery Time": "14:15",
+          "Delivery Address": "596 Lolita Gardens",
+          "Mix Customer": {
+            "Qty": "9.00 m³",
+            "Cust. Descr.": "RAPIDTECT 35MPA",
+            "Description": "RAPIDTECT 35MPA",
+            "Code": "RMXD435N51N",
+            "Slump": "150+-30"
+          },
+          "Mix Additional 1": {
+            "Qty": "9.00 m³",
+            "Cust. Descr.": null,
+            "Description": "35NWIN1 WEATHERMIX 8 TO 10 DEGREES",
+            "Code": "909124",
+            "Slump": null
+          },
+          "Mix Additional 2": {
+            "Qty": "9.00 m³",
+            "Cust. Descr.": "35NWIN1 WEATHERMIX 8 TO 10 DEGREES",
+            "Description": "35NWIN1 WEATHERMIX 8 TO 10 DEGREES",
+            "Code": "909124",
+            "Slump": "150+-30"
+          },
+          "Extra Charges": []
+        }
+        """
+    )
+
+    #expect(tickets.count == 1)
+    #expect(tickets.first?.deliveryAddress == "596 Lolita Gardens Mississauga, ON L5A 4N8")
+    #expect(tickets.first?.mixCustomer.customerDescription == "RAPIDTECT 35MPA 75%72HR N 20MM")
+    #expect(tickets.first?.mixCustomer.description == "RAPIDTECT 35MPA 75%72HR N 20MM")
+    #expect(tickets.first?.mixAdditional2 == nil)
+}
+
+@Test func processPageForTestRestoresRapidtectBrandFromSplitRowText() throws {
+    let tickets = try Extract.processPageForTest(
+        pageText: """
+        TICKET NO. 47163496
+        MIX
+        9.00 m³ RAPIDTE
+        CT
+        35MPA
+        75%48 N
+        20MM
+        RAPIDTECT 35MPA
+        75%48 N 20MM
+        RMXD235N51N 150+-30
+        9.00 m³ 35NWIN1 WEATHERMIX
+        8 TO 10 DEGREES
+        Yes - Manual Additions
+        909124
+        INSTRUCTIONS
+        DELIVERY DATE: Tue, Mar 3 2026
+        DELIVERY TIME: 12:08
+        DELIVERY ADDR.: 596 Lolita Gardens
+        Mississauga, ON L5A
+        4N8
+        GPS: 43.593861
+        EXTRA CHARGES
+        """,
+        modelResponse: """
+        {
+          "Ticket No.": "47163496",
+          "Delivery Date": "Tue, Mar 3 2026",
+          "Delivery Time": "12:08",
+          "Delivery Address": "596 Lolita Gardens, Mississauga, ON L5A 4N8",
+          "Mix Customer": {
+            "Qty": "9.00 m3",
+            "Cust. Descr.": "35MPA 75%48 N 20MM",
+            "Description": "35MPA 75%48 N 20MM",
+            "Code": "RMXD235N51N",
+            "Slump": "150+-30"
+          },
+          "Mix Additional 1": {
+            "Qty": "9.00 m3",
+            "Cust. Descr.": "RAPIDTE",
+            "Description": "35NWIN1 WEATHERMIX 8 TO 10 DEGREES",
+            "Code": "909124",
+            "Slump": "150+-30"
+          },
+          "Mix Additional 2": {
+            "Qty": "9.00 m3",
+            "Cust. Descr.": "RAPIDTE",
+            "Description": "CT",
+            "Code": "RMXD235N51N",
+            "Slump": "150+-30"
+          },
+          "Extra Charges": []
+        }
+        """
+    )
+
+    #expect(tickets.count == 1)
+    #expect(tickets.first?.mixCustomer.customerDescription == "RAPIDTECT 35MPA 75%48 N 20MM")
+    #expect(tickets.first?.mixCustomer.description == "RAPIDTECT 35MPA 75%48 N 20MM")
+    #expect(tickets.first?.mixAdditional1?.customerDescription == nil)
+    #expect(tickets.first?.mixAdditional2 == nil)
+}
+
+@Test func processPageForTestRepairsSplitWeathermixCustomerBrand() throws {
+    let tickets = try Extract.processPageForTest(
+        pageText: """
+        TICKET NO. 81531959
+        MIX
+        7.00 m³ WEATHE
+        RMIX
+        40MPA N
+        20MM SP
+        WEATHERMIX 40MPA N
+        20MM HR
+        RMXW40N51NX 150+-30
+        7.00 m³ 40NWIN1 WEATHERMIX
+        8 TO 10 DEGREES
+        Yes - Manual Additions
+        907478
+        INSTRUCTIONS
+        DELIVERY DATE: Fri, Nov 14 2025
+        DELIVERY TIME: 12:25
+        DELIVERY ADDR.: 596 Lolita Gardens
+        Mississauga, ON L5A
+        3K7
+        GPS: 43.593778
+        EXTRA CHARGES
+        """,
+        modelResponse: """
+        {
+          "Ticket No.": "81531959",
+          "Delivery Date": "Fri, Nov 14 2025",
+          "Delivery Time": "12:25",
+          "Delivery Address": "596 Lolita Gardens Mississauga, ON L5A 3K7",
+          "Mix Customer": {
+            "Qty": "7.00 m³",
+            "Cust. Descr.": "WEATHE",
+            "Description": "40MPA N 20MM SP",
+            "Code": "RMXW40N51NX",
+            "Slump": "150+-30"
+          },
+          "Mix Additional 1": {
+            "Qty": "7.00 m³",
+            "Cust. Descr.": "40NWIN1 WEATHERMIX",
+            "Description": "8 TO 10 DEGREES",
+            "Code": "907478",
+            "Slump": ""
+          },
+          "Mix Additional 2": null,
+          "Extra Charges": []
+        }
+        """
+    )
+
+    #expect(tickets.count == 1)
+    #expect(tickets.first?.mixCustomer.customerDescription == "WEATHERMIX 40MPA N 20MM SP")
+    #expect(tickets.first?.mixCustomer.description == "WEATHERMIX 40MPA N 20MM HR")
+}
+
+@Test func processPageForTestNullsWinterModifierCustomerAndSlump() throws {
+    let tickets = try Extract.processPageForTest(
+        pageText: """
+        TICKET NO. 96077932
+        MIX
+        7.50 m³ TEMPTEC
+        T 35MPA
+        N 20MM
+        SP
+        WEATHERMIX 35MPA N
+        20MM HR
+        7.50 m³ 35NWIN2 WEATHERMIX
+        5 TO 7 DEGREES
+        n/a - No Manual Additions
+        RMXW35N51NX 150+-30
+        909130
+        INSTRUCTIONS
+        DELIVERY DATE: Thu, Mar 5 2026
+        DELIVERY TIME: 14:12
+        DELIVERY ADDR.: 596 Lolita Gardens
+        Mississauga, ON L5A
+        3K7
+        GPS: 43.593865
+        EXTRA CHARGES
+        """,
+        modelResponse: """
+        {
+          "Ticket No.": "96077932",
+          "Delivery Date": "Thu, Mar 5 2026",
+          "Delivery Time": "14:12",
+          "Delivery Address": "596 Lolita Gardens",
+          "Mix Customer": {
+            "Qty": "7.50 m³",
+            "Cust. Descr.": "WEATHERMIX 35MPA N TEMPTECN 20MM SP",
+            "Description": "WEATHERMIX 35MPA N TEMPTECN 20MM HR",
+            "Code": "RMXW35N51NX",
+            "Slump": "150+-30"
+          },
+          "Mix Additional 1": {
+            "Qty": "7.50 m³",
+            "Cust. Descr.": "TEMPTEC",
+            "Description": "35NWIN2 WEATHERMIX 5 TO 7 DEGREES",
+            "Code": "909130",
+            "Slump": "150+-30"
+          },
+          "Mix Additional 2": {
+            "Qty": "7.50 m³",
+            "Cust. Descr.": "35NWIN2 WEATHERMIX 5 TO 7 DEGREES",
+            "Description": "35NWIN2 WEATHERMIX 5 TO 7 DEGREES",
+            "Code": "909130",
+            "Slump": "150+-30"
+          },
+          "Extra Charges": []
+        }
+        """
+    )
+
+    #expect(tickets.count == 1)
+    #expect(tickets.first?.deliveryAddress == "596 Lolita Gardens Mississauga, ON L5A 3K7")
+    #expect(tickets.first?.mixCustomer.customerDescription == "TEMPTECT 35MPA N 20MM SP")
+    #expect(tickets.first?.mixCustomer.description == "WEATHERMIX 35MPA N 20MM HR")
+    #expect(tickets.first?.mixAdditional1?.customerDescription == nil)
+    #expect(tickets.first?.mixAdditional1?.slump == nil)
+    #expect(tickets.first?.mixAdditional2 == nil)
+}
+
+@Test func lookupFieldEvidenceReturnsRequestedExtraChargeRow() {
+    let evidence = Extract.lookupFieldEvidence(
+        path: "Extra Charges[1].Qty",
+        pageText: "",
+        mixText: "",
+        mixRowLines: "",
+        mixParsedHints: "",
+        extraChargesText: """
+        EXTRA CHARGES
+        SEASONAL/MINUTE (PER M3) 9.00
+        FLEX FUEL FEE 1-INN 9.00
+        """
+    )
+
+    #expect(evidence == "Charge row 2:\nFLEX FUEL FEE 1-INN 9.00")
 }

@@ -1,0 +1,47 @@
+{
+  "Ticket No.": "95830882",
+  "Delivery Date": "Mon, Mar 2 2026",
+  "Delivery Time": "11:47",
+  "Delivery Address": "596 Lolita Gardens, Mississauga, ON L5A 3K7",
+  "Mix Customer": {
+    "Qty": "4.00 m3",
+    "Cust. Descr.": "RAPIDTECT 35MPA 75%72HR N 20MM",
+    "Description": "RAPIDTECT 35MPA 75%72HR N 20MM",
+    "Code": "RMXD435N51N",
+    "Slump": "150+-30"
+  },
+  "Mix Additional 1": {
+    "Qty": "4.00 m3",
+    "Cust. Descr.": null,
+    "Description": "35NWIN2 WEATHERMIX 5 TO 7 DEGREES",
+    "Code": "909130",
+    "Slump": null
+  },
+  "Mix Additional 2": null,
+  "Extra Charges": [
+    {
+      "Description": "ENVIRONMENTAL/ENVIRONNEMENT",
+      "Qty": "4.00"
+    },
+    {
+      "Description": "TOARC FEE (M3)",
+      "Qty": "4.00"
+    },
+    {
+      "Description": "SUPERPLASTICIZER EXT",
+      "Qty": "4.00"
+    },
+    {
+      "Description": "SEASONAL/MANUTE (PER M3)",
+      "Qty": "4.00"
+    },
+    {
+      "Description": "FLEX FUEL FEE 3-INN",
+      "Qty": "4.00"
+    },
+    {
+      "Description": "SITE WASH WATER MANAGEMENT FEE",
+      "Qty": "4.00"
+    }
+  ]
+}

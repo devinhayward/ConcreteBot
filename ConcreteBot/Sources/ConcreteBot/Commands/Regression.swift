@@ -131,6 +131,7 @@ enum Regression {
         var diffs: [FieldDiff] = []
 
         compareString("Ticket No.", expected.ticketNumber, actual.ticketNumber, diffs: &diffs)
+        compareBool("Recalled", expected.recalled, actual.recalled, diffs: &diffs)
         compareString("Delivery Date", expected.deliveryDate, actual.deliveryDate, diffs: &diffs)
         compareString("Delivery Time", expected.deliveryTime, actual.deliveryTime, diffs: &diffs)
         compareString("Delivery Address", expected.deliveryAddress, actual.deliveryAddress, diffs: &diffs)
@@ -223,6 +224,21 @@ enum Regression {
         }
     }
 
+    private static func compareBool(
+        _ path: String,
+        _ expected: Bool?,
+        _ actual: Bool?,
+        diffs: inout [FieldDiff]
+    ) {
+        if expected != actual {
+            diffs.append(FieldDiff(
+                path: path,
+                expected: displayBool(expected),
+                actual: displayBool(actual)
+            ))
+        }
+    }
+
     private static func describeMixRow(_ row: MixRow?) -> String {
         guard let row else { return "null" }
         let qty = displayValue(row.qty)
@@ -242,6 +258,11 @@ enum Regression {
             .replacingOccurrences(of: "\t", with: "\\t")
             .replacingOccurrences(of: "\"", with: "\\\"")
         return "\"\(escaped)\""
+    }
+
+    private static func displayBool(_ value: Bool?) -> String {
+        guard let value else { return "null" }
+        return value ? "true" : "false"
     }
 
     private static func renderReport(results: [FixtureResult]) -> String {
